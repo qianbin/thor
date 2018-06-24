@@ -485,8 +485,9 @@ func TestEnergyNative(t *testing.T) {
 		ShouldOutput(big.NewInt(10)).
 		Assert(t)
 
-	test.Case("transferFrom", addr, to, big.NewInt(10)).
-		ShouldLog(transferEvent(addr, to, big.NewInt(10))).
+	test.Case("transferFrom", addr, thor.BytesToAddress([]byte("some one")), big.NewInt(10)).
+		Caller(to).
+		ShouldLog(transferEvent(addr, thor.BytesToAddress([]byte("some one")), big.NewInt(10))).
 		ShouldOutput(true).
 		Assert(t)
 
