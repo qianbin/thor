@@ -6,30 +6,27 @@
 pragma solidity 0.4.24;
 import "./token.sol";
 
-/// @title Energy an token that represents fuel for VET.
+/// @title Energy implements VIP180(ERC20) standard, to present VeThor sub token.
 contract Energy is Token {
     mapping(address => mapping (address => uint256)) allowed;
 
-    ///@return ERC20 token name
     function name() public pure returns (string) {
         return "VeThor";
     }
 
-    ///@return ERC20 token decimals
     function decimals() public pure returns (uint8) {
         return 18;    
     }
 
-    ///@return ERC20 token symbol
     function symbol() public pure returns (string) {
         return "VTHO";
     }
 
-    ///@return ERC20 token total supply
     function totalSupply() public view returns (uint256) {
         return EnergyNative(this).native_totalSupply();
     }
 
+    // @return energy that total burned.
     function totalBurned() public view returns(uint256) {
         return EnergyNative(this).native_totalBurned();
     }
@@ -43,6 +40,7 @@ contract Energy is Token {
         return true;
     }
 
+    /// @notice It's not VIP180(ERC20)'s standard method. It allows master of `_from` or `_from` itself to transfer `_amount` of energy to `_to`.
     function move(address _from, address _to, uint256 _amount) public returns (bool success) {
         require(_from == msg.sender || EnergyNative(this).native_master(_from) == msg.sender, "builtin: self or master required");
         _transfer(_from, _to, _amount);
@@ -50,8 +48,8 @@ contract Energy is Token {
     }
 
     function transferFrom(address _from, address _to, uint256 _amount) public returns(bool success) {
-        require(allowed[_from][_to] >= _amount, "builtin: insufficient allowance");
-        allowed[_from][_to] -= _amount;
+        require(allowed[_from][msg.sender] >= _amount, "builtin: insufficient allowance");
+        allowed[_from][msg.sender] -= _amount;
 
         _transfer(_from, _to, _amount);
         return true;
