@@ -252,15 +252,15 @@ func TestParamsNative(t *testing.T) {
 
 func TestAuthorityNative(t *testing.T) {
 	var (
-		signer1   = thor.BytesToAddress([]byte("signer1"))
+		master1   = thor.BytesToAddress([]byte("master1"))
 		endorsor1 = thor.BytesToAddress([]byte("endorsor1"))
 		identity1 = thor.BytesToBytes32([]byte("identity1"))
 
-		signer2   = thor.BytesToAddress([]byte("signer2"))
+		master2   = thor.BytesToAddress([]byte("master2"))
 		endorsor2 = thor.BytesToAddress([]byte("endorsor2"))
 		identity2 = thor.BytesToBytes32([]byte("identity2"))
 
-		signer3   = thor.BytesToAddress([]byte("signer3"))
+		master3   = thor.BytesToAddress([]byte("master3"))
 		endorsor3 = thor.BytesToAddress([]byte("endorsor3"))
 		identity3 = thor.BytesToBytes32([]byte("identity3"))
 		executor  = thor.BytesToAddress([]byte("e"))
@@ -285,21 +285,14 @@ func TestAuthorityNative(t *testing.T) {
 
 	rt := runtime.New(seeker, st, &xenv.BlockContext{})
 
-	addEvent := func(signer, endorsor thor.Address, identity thor.Bytes32) *tx.Event {
-		ev, _ := builtin.Authority.ABI.EventByName("Add")
-		data, _ := ev.Encode(endorsor, identity)
+	candidateEvent := func(nodeMaster thor.Address, action string) *tx.Event {
+		ev, _ := builtin.Authority.ABI.EventByName("Candidate")
+		var b32 thor.Bytes32
+		copy(b32[:], action)
+		data, _ := ev.Encode(b32)
 		return &tx.Event{
 			Address: builtin.Authority.Address,
-			Topics:  []thor.Bytes32{ev.ID(), thor.BytesToBytes32(signer[:])},
-			Data:    data,
-		}
-	}
-	removeEvent := func(signer thor.Address) *tx.Event {
-		ev, _ := builtin.Authority.ABI.EventByName("Remove")
-		data, _ := ev.Encode()
-		return &tx.Event{
-			Address: builtin.Authority.Address,
-			Topics:  []thor.Bytes32{ev.ID(), thor.BytesToBytes32(signer[:])},
+			Topics:  []thor.Bytes32{ev.ID(), thor.BytesToBytes32(nodeMaster[:])},
 			Data:    data,
 		}
 	}
@@ -315,62 +308,63 @@ func TestAuthorityNative(t *testing.T) {
 		ShouldOutput(executor).
 		Assert(t)
 
-	test.Case("add", signer1, endorsor1, identity1).
-		ShouldLog(addEvent(signer1, endorsor1, identity1)).
+	test.Case("first").
+		ShouldOutput(thor.Address{}).
 		Assert(t)
 
-	test.Case("add", signer1, endorsor1, identity1).
-		Caller(thor.BytesToAddress([]byte("other"))).
-		ShouldVMError(errReverted).
+	test.Case("add", master1, endorsor1, identity1).
+		ShouldLog(candidateEvent(master1, "added")).
 		Assert(t)
 
-	test.Case("add", signer1, endorsor1, identity1).
-		ShouldVMError(errReverted).
+	test.Case("add", master2, endorsor2, identity2).
+		ShouldLog(candidateEvent(master2, "added")).
 		Assert(t)
 
-	test.Case("remove", signer1).
-		ShouldLog(removeEvent(signer1)).
+	test.Case("add", master3, endorsor3, identity3).
+		ShouldLog(candidateEvent(master3, "added")).
 		Assert(t)
 
-	test.Case("add", signer1, endorsor1, identity1).
-		ShouldLog(addEvent(signer1, endorsor1, identity1)).
-		Assert(t)
-
-	test.Case("add", signer2, endorsor2, identity2).
-		ShouldLog(addEvent(signer2, endorsor2, identity2)).
-		Assert(t)
-
-	test.Case("add", signer3, endorsor3, identity3).
-		ShouldLog(addEvent(signer3, endorsor3, identity3)).
-		Assert(t)
-
-	test.Case("get", signer1).
+	test.Case("get", master1).
 		ShouldOutput(true, endorsor1, identity1, true).
 		Assert(t)
 
 	test.Case("first").
-		ShouldOutput(signer1).
+		ShouldOutput(master1).
 		Assert(t)
 
-	test.Case("next", signer1).
-		ShouldOutput(signer2).
+	test.Case("next", master1).
+		ShouldOutput(master2).
 		Assert(t)
 
-	test.Case("next", signer2).
-		ShouldOutput(signer3).
+	test.Case("next", master2).
+		ShouldOutput(master3).
 		Assert(t)
 
-	test.Case("next", signer3).
+	test.Case("next", master3).
 		ShouldOutput(thor.Address{}).
 		Assert(t)
 
-	test.Case("remove", signer1).
-		Caller(thor.BytesToAddress([]byte("some one"))).
+	test.Case("add", master1, endorsor1, identity1).
+		Caller(thor.BytesToAddress([]byte("other"))).
 		ShouldVMError(errReverted).
 		Assert(t)
 
-	st.SetBalance(endorsor1, big.NewInt(1))
-	test.Case("remove", signer1).
+	test.Case("add", master1, endorsor1, identity1).
+		ShouldVMError(errReverted).
+		Assert(t)
+
+	test.Case("revoke", master1).
+		ShouldLog(candidateEvent(master1, "revoked")).
+		Assert(t)
+
+	// duped even revoked
+	test.Case("add", master1, endorsor1, identity1).
+		ShouldVMError(errReverted).
+		Assert(t)
+
+	// any one can revoke a candidate if out of endorsement
+	st.SetBalance(endorsor2, big.NewInt(1))
+	test.Case("revoke", master2).
 		Caller(thor.BytesToAddress([]byte("some one"))).
 		Assert(t)
 
