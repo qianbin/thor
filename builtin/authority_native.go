@@ -83,7 +83,10 @@ func init() {
 			env.ParseArgs(&nodeMaster)
 
 			env.UseGas(thor.SloadGas)
-			_, endorsor, _, _ := Authority.Native(env.State()).Get(thor.Address(nodeMaster))
+			listed, endorsor, _, _ := Authority.Native(env.State()).Get(thor.Address(nodeMaster))
+			if !listed {
+				return []interface{}{false}
+			}
 
 			env.UseGas(thor.GetBalanceGas)
 			bal := env.State().GetBalance(endorsor)

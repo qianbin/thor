@@ -11,6 +11,7 @@ import (
 	"errors"
 	"math"
 	"math/big"
+	"reflect"
 	"testing"
 	"time"
 
@@ -134,7 +135,11 @@ func (c *ccase) Assert(t *testing.T) *ccase {
 		assert.Nil(t, err, "should hash state")
 		assert.Equal(t, stateRoot, newStateRoot)
 	}
-	assert.Equal(t, c.vmerr, vmout.VMErr)
+	if c.vmerr != nil {
+		assert.Equal(t, c.vmerr, vmout.VMErr)
+	} else {
+		assert.Nil(t, vmout.VMErr)
+	}
 
 	if c.output != nil {
 		out, err := method.EncodeOutput((*c.output)...)
@@ -142,8 +147,18 @@ func (c *ccase) Assert(t *testing.T) *ccase {
 		assert.Equal(t, out, vmout.Data, "should match output")
 	}
 
-	if c.events != nil {
-		assert.Equal(t, c.events, vmout.Events, "should match event")
+	if len(c.events) > 0 {
+		for _, ev := range c.events {
+			found := func() bool {
+				for _, outEv := range vmout.Events {
+					if reflect.DeepEqual(ev, outEv) {
+						return true
+					}
+				}
+				return false
+			}()
+			assert.True(t, found, "event should appear")
+		}
 	}
 
 	assert.Nil(t, c.rt.State().Err(), "should no state error")
@@ -691,10 +706,16 @@ func TestPrototypeNative(t *testing.T) {
 		Caller(notmaster).
 		ShouldVMError(errReverted).
 		Assert(t)
+	test.Case("currentSponsor", contract).
+		ShouldOutput(sponsor).
+		Assert(t)
 
 	test.Case("unsponsor", contract).
 		Caller(sponsor).
 		ShouldOutput().
+		Assert(t)
+	test.Case("currentSponsor", contract).
+		ShouldOutput(sponsor).
 		Assert(t)
 
 	test.Case("unsponsor", contract).

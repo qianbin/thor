@@ -13,11 +13,11 @@ contract Authority {
     }
 
     function add(address _nodeMaster, address _endorsor, bytes32 _identity) public {
+        require(_nodeMaster != 0, "builtin: invalid node master");
+        require(_endorsor != 0, "builtin: invalid endorsor");
+        require(_identity != 0, "builtin: invalid identity");
         require(msg.sender == executor(), "builtin: executor required");
-        require(_nodeMaster != 0, "builtin: valid node master required");
-        require(_endorsor != 0, "builtin: valid endorsor required");
-        require(_identity != 0, "builtin: non-empty identity required");
-
+        
         require(AuthorityNative(this).native_add(_nodeMaster, _endorsor, _identity), "builtin: already exists");
 
         emit Candidate(_nodeMaster, "added");
@@ -25,7 +25,7 @@ contract Authority {
 
     function revoke(address _nodeMaster) public {
         require(msg.sender == executor() || !AuthorityNative(this).native_isEndorsed(_nodeMaster), "builtin: requires executor, or node master out of endorsed");
-        require(AuthorityNative(this).native_revoke(_nodeMaster), "builtin: not exists");
+        require(AuthorityNative(this).native_revoke(_nodeMaster), "builtin: not listed");
 
         emit Candidate(_nodeMaster, "revoked");
     }

@@ -273,12 +273,6 @@ func init() {
 				return []interface{}{false}
 			}
 
-			env.UseGas(thor.SloadGas)
-			if binding.CurrentSponsor() == thor.Address(args.Sponsor) {
-				env.UseGas(thor.SstoreResetGas)
-				binding.SelectSponsor(thor.Address{})
-			}
-
 			env.UseGas(thor.SstoreResetGas)
 			binding.Sponsor(thor.Address(args.Sponsor), false)
 

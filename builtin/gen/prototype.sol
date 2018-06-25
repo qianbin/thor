@@ -8,77 +8,82 @@ pragma solidity 0.4.24;
 /// @title Prototype extends account.
 contract Prototype {
 
-    function master(address self) public view returns(address){
-        return PrototypeNative(this).native_master(self);
+    function master(address _self) public view returns(address){
+        return PrototypeNative(this).native_master(_self);
     }
 
-    function setMaster(address self, address newMaster) public {
-        require(self == msg.sender || PrototypeNative(this).native_master(self) == msg.sender, "builtin: self or master required");
-        PrototypeNative(this).native_setMaster(self, newMaster);
+    function setMaster(address _self, address _newMaster) public {
+        onlySelfOrMaster(_self);
+        PrototypeNative(this).native_setMaster(_self, _newMaster);
     }
 
-    function balance(address self, uint blockNumber) public view returns(uint256){
-        return  PrototypeNative(this).native_balanceAtBlock(self, uint32(blockNumber));
+    function balance(address _self, uint _blockNumber) public view returns(uint256){
+        return PrototypeNative(this).native_balanceAtBlock(_self, uint32(_blockNumber));
     }
 
-    function energy(address self, uint blockNumber) public view returns(uint256){
-        return  PrototypeNative(this).native_energyAtBlock(self, uint32(blockNumber));
+    function energy(address _self, uint _blockNumber) public view returns(uint256){
+        return PrototypeNative(this).native_energyAtBlock(_self, uint32(_blockNumber));
     }
 
-    function hasCode(address self) public view returns(bool){
-        return PrototypeNative(this).native_hasCode(self);
+    function hasCode(address _self) public view returns(bool){
+        return PrototypeNative(this).native_hasCode(_self);
     }
 
-    function storageFor(address self, bytes32 key) public view returns(bytes32){
-        return PrototypeNative(this).native_storageFor(self, key);
+    function storageFor(address _self, bytes32 _key) public view returns(bytes32){
+        return PrototypeNative(this).native_storageFor(_self, _key);
     }
 
-    function creditPlan(address self) public view returns(uint256 credit, uint256 recoveryRate){
-        return PrototypeNative(this).native_creditPlan(self);
+    function creditPlan(address _self) public view returns(uint256 credit, uint256 recoveryRate){
+        return PrototypeNative(this).native_creditPlan(_self);
     }
 
-    function setCreditPlan(address self, uint256 credit, uint256 recoveryRate) public{
-        require(self == msg.sender || PrototypeNative(this).native_master(self) == msg.sender, "builtin: self or master required");
-        PrototypeNative(this).native_setCreditPlan(self, credit, recoveryRate);
+    function setCreditPlan(address _self, uint256 _credit, uint256 _recoveryRate) public{
+        onlySelfOrMaster(_self);
+        PrototypeNative(this).native_setCreditPlan(_self, _credit, _recoveryRate);
     }
 
-    function isUser(address self, address user) public view returns(bool){
-        return PrototypeNative(this).native_isUser(self, user);
+    function isUser(address _self, address _user) public view returns(bool){
+        return PrototypeNative(this).native_isUser(_self, _user);
     }
 
-    function userCredit(address self, address user) public view returns(uint256){
-        return PrototypeNative(this).native_userCredit(self, user);
+    function userCredit(address _self, address _user) public view returns(uint256){
+        return PrototypeNative(this).native_userCredit(_self, _user);
     }
 
-    function addUser(address self, address user) public{
-        require(self == msg.sender || PrototypeNative(this).native_master(self) == msg.sender, "builtin: self or master required");
-        require(PrototypeNative(this).native_addUser(self, user), "builtin: already added");        
+    function addUser(address _self, address _user) public{
+        require(_user != 0, "builtin: invalid user");
+        onlySelfOrMaster(_self);
+        require(PrototypeNative(this).native_addUser(_self, _user), "builtin: already added");        
     }
 
-    function removeUser(address self, address user) public{
-        require(self == msg.sender || PrototypeNative(this).native_master(self) == msg.sender, "builtin: self or master required");
-        require(PrototypeNative(this).native_removeUser(self, user), "builtin: not a user");        
+    function removeUser(address _self, address _user) public{
+        onlySelfOrMaster(_self);
+        require(PrototypeNative(this).native_removeUser(_self, _user), "builtin: not a user");        
     }
 
-    function sponsor(address self) public{
-        require(PrototypeNative(this).native_sponsor(self, msg.sender), "builtin: already sponsored");
+    function sponsor(address _self) public{
+        require(PrototypeNative(this).native_sponsor(_self, msg.sender), "builtin: already sponsored");
     }
 
-    function unsponsor(address self) public {
-        require(PrototypeNative(this).native_unsponsor(self, msg.sender), "builtin: not sponsored");        
+    function unsponsor(address _self) public {
+        require(PrototypeNative(this).native_unsponsor(_self, msg.sender), "builtin: not sponsored");        
     }
 
-    function isSponsor(address self, address sponsorAddress) public view returns(bool) {
-        return PrototypeNative(this).native_isSponsor(self, sponsorAddress);
+    function isSponsor(address _self, address _sponsor) public view returns(bool) {
+        return PrototypeNative(this).native_isSponsor(_self, _sponsor);
     }
 
-    function selectSponsor(address self, address sponsorAddress) public {
-        require(self == msg.sender || PrototypeNative(this).native_master(self) == msg.sender, "builtin: self or master required");
-        require(PrototypeNative(this).native_selectSponsor(self, sponsorAddress), "builtin: not a sponsor");
+    function selectSponsor(address _self, address _sponsor) public {
+        onlySelfOrMaster(_self);
+        require(PrototypeNative(this).native_selectSponsor(_self, _sponsor), "builtin: not a sponsor");
     }
     
-    function currentSponsor(address self) public view returns(address){
-        return PrototypeNative(this).native_currentSponsor(self);
+    function currentSponsor(address _self) public view returns(address){
+        return PrototypeNative(this).native_currentSponsor(_self);
+    }
+
+    function onlySelfOrMaster(address _self) internal view {
+        require(_self == msg.sender || PrototypeNative(this).native_master(_self) == msg.sender, "builtin: self or master required");
     }
 }
 
