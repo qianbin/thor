@@ -34,8 +34,8 @@ func init() {
 	if energyTransferEvent, found = builtin.Energy.ABI.EventByName("Transfer"); !found {
 		panic("transfer event not found")
 	}
-	if prototypeSetMasterEvent, found = builtin.Prototype.EventABI.EventByName("$SetMaster"); !found {
-		panic("$setMaster event not found")
+	if prototypeSetMasterEvent, found = builtin.Prototype.Events().EventByName("$Master"); !found {
+		panic("$Master event not found")
 	}
 }
 

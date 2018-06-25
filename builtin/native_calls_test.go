@@ -155,38 +155,6 @@ func (c *ccase) Assert(t *testing.T) *ccase {
 	return c
 }
 
-func buildTestLogs(methodName string, contractAddr thor.Address, topics []thor.Bytes32, args ...interface{}) []*tx.Event {
-	nativeABI := builtin.Prototype.EventABI
-
-	mustEventByName := func(name string) *abi.Event {
-		if event, found := nativeABI.EventByName(name); found {
-			return event
-		}
-		panic("event not found")
-	}
-
-	methodEvent := mustEventByName(methodName)
-
-	etopics := make([]thor.Bytes32, 0, len(topics)+1)
-	etopics = append(etopics, methodEvent.ID())
-
-	for _, t := range topics {
-		etopics = append(etopics, t)
-	}
-
-	data, _ := methodEvent.Encode(args...)
-
-	testLogs := []*tx.Event{
-		&tx.Event{
-			Address: contractAddr,
-			Topics:  etopics,
-			Data:    data,
-		},
-	}
-
-	return testLogs
-}
-
 func buildGenesis(kv kv.GetPutter, proc func(state *state.State) error) *block.Block {
 	blk, _, _ := new(genesis.Builder).
 		Timestamp(uint64(time.Now().Unix())).
@@ -526,6 +494,48 @@ func TestPrototypeNative(t *testing.T) {
 	st.SetStorage(thor.Address(acc1), key, value)
 	st.SetBalance(thor.Address(acc1), big.NewInt(1))
 
+	masterEvent := func(self, newMaster thor.Address) *tx.Event {
+		ev, _ := builtin.Prototype.Events().EventByName("$Master")
+		return &tx.Event{
+			Address: self,
+			Topics:  []thor.Bytes32{ev.ID(), thor.BytesToBytes32(newMaster.Bytes())},
+		}
+	}
+
+	creditPlanEvent := func(self thor.Address, credit, recoveryRate *big.Int) *tx.Event {
+		ev, _ := builtin.Prototype.Events().EventByName("$CreditPlan")
+		data, _ := ev.Encode(credit, recoveryRate)
+		return &tx.Event{
+			Address: self,
+			Topics:  []thor.Bytes32{ev.ID()},
+			Data:    data,
+		}
+	}
+
+	userEvent := func(self, user thor.Address, action string) *tx.Event {
+		ev, _ := builtin.Prototype.Events().EventByName("$User")
+		var b32 thor.Bytes32
+		copy(b32[:], action)
+		data, _ := ev.Encode(b32)
+		return &tx.Event{
+			Address: self,
+			Topics:  []thor.Bytes32{ev.ID(), thor.BytesToBytes32(user.Bytes())},
+			Data:    data,
+		}
+	}
+
+	sponsorEvent := func(self, sponsor thor.Address, action string) *tx.Event {
+		ev, _ := builtin.Prototype.Events().EventByName("$Sponsor")
+		var b32 thor.Bytes32
+		copy(b32[:], action)
+		data, _ := ev.Encode(b32)
+		return &tx.Event{
+			Address: self,
+			Topics:  []thor.Bytes32{ev.ID(), thor.BytesToBytes32(sponsor.Bytes())},
+			Data:    data,
+		}
+	}
+
 	rt := runtime.New(seeker, st, &xenv.BlockContext{
 		Time:   genesisBlock.Header().Timestamp(),
 		Number: genesisBlock.Header().Number(),
@@ -560,7 +570,7 @@ func TestPrototypeNative(t *testing.T) {
 	test.Case("setMaster", acc1, acc2).
 		Caller(acc1).
 		ShouldOutput().
-		ShouldLog(buildTestLogs("$SetMaster", acc1, []thor.Bytes32{thor.BytesToBytes32(acc2[:])})...).
+		ShouldLog(masterEvent(acc1, acc2)).
 		Assert(t)
 
 	test.Case("setMaster", acc1, acc2).
@@ -580,18 +590,18 @@ func TestPrototypeNative(t *testing.T) {
 		ShouldOutput(true).
 		Assert(t)
 
-	test.Case("setUserPlan", contract, credit, recoveryRate).
+	test.Case("setCreditPlan", contract, credit, recoveryRate).
 		Caller(master).
 		ShouldOutput().
-		ShouldLog(buildTestLogs("$SetUserPlan", contract, nil, credit, recoveryRate)...).
+		ShouldLog(creditPlanEvent(contract, credit, recoveryRate)).
 		Assert(t)
 
-	test.Case("setUserPlan", contract, credit, recoveryRate).
+	test.Case("setCreditPlan", contract, credit, recoveryRate).
 		Caller(notmaster).
 		ShouldVMError(errReverted).
 		Assert(t)
 
-	test.Case("userPlan", contract).
+	test.Case("creditPlan", contract).
 		ShouldOutput(credit, recoveryRate).
 		Assert(t)
 
@@ -602,7 +612,7 @@ func TestPrototypeNative(t *testing.T) {
 	test.Case("addUser", contract, user).
 		Caller(master).
 		ShouldOutput().
-		ShouldLog(buildTestLogs("$AddRemoveUser", contract, []thor.Bytes32{thor.BytesToBytes32(user[:])}, true)...).
+		ShouldLog(userEvent(contract, user, "added")).
 		Assert(t)
 
 	test.Case("addUser", contract, user).
@@ -626,7 +636,7 @@ func TestPrototypeNative(t *testing.T) {
 	test.Case("removeUser", contract, user).
 		Caller(master).
 		ShouldOutput().
-		ShouldLog(buildTestLogs("$AddRemoveUser", contract, []thor.Bytes32{thor.BytesToBytes32(user[:])}, false)...).
+		ShouldLog(userEvent(contract, user, "removed")).
 		Assert(t)
 
 	test.Case("removeUser", contract, user).
@@ -647,13 +657,13 @@ func TestPrototypeNative(t *testing.T) {
 		ShouldOutput(false).
 		Assert(t)
 
-	test.Case("sponsor", contract, true).
+	test.Case("sponsor", contract).
 		Caller(sponsor).
 		ShouldOutput().
-		ShouldLog(buildTestLogs("$Sponsor", contract, []thor.Bytes32{thor.BytesToBytes32(sponsor.Bytes())}, true)...).
+		ShouldLog(sponsorEvent(contract, sponsor, "sponsored")).
 		Assert(t)
 
-	test.Case("sponsor", contract, true).
+	test.Case("sponsor", contract).
 		Caller(sponsor).
 		ShouldVMError(errReverted).
 		Assert(t)
@@ -669,7 +679,7 @@ func TestPrototypeNative(t *testing.T) {
 	test.Case("selectSponsor", contract, sponsor).
 		Caller(master).
 		ShouldOutput().
-		ShouldLog(buildTestLogs("$SelectSponsor", contract, []thor.Bytes32{thor.BytesToBytes32(sponsor[:])})...).
+		ShouldLog(sponsorEvent(contract, sponsor, "selected")).
 		Assert(t)
 
 	test.Case("selectSponsor", contract, notsponsor).
@@ -682,12 +692,12 @@ func TestPrototypeNative(t *testing.T) {
 		ShouldVMError(errReverted).
 		Assert(t)
 
-	test.Case("sponsor", contract, false).
+	test.Case("unsponsor", contract).
 		Caller(sponsor).
 		ShouldOutput().
 		Assert(t)
 
-	test.Case("sponsor", contract, false).
+	test.Case("unsponsor", contract).
 		Caller(sponsor).
 		ShouldVMError(errReverted).
 		Assert(t)
@@ -704,8 +714,8 @@ func TestPrototypeNative(t *testing.T) {
 		Assert(t)
 
 	// should be hash of rlp raw
-	test.Case("storageFor", builtin.Prototype.Address, thor.Blake2b(contract.Bytes(), []byte("user-plan"))).
-		ShouldOutput(st.GetStorage(builtin.Prototype.Address, thor.Blake2b(contract.Bytes(), []byte("user-plan")))).
+	test.Case("storageFor", builtin.Prototype.Address, thor.Blake2b(contract.Bytes(), []byte("credit-plan"))).
+		ShouldOutput(st.GetStorage(builtin.Prototype.Address, thor.Blake2b(contract.Bytes(), []byte("credit-plan")))).
 		Assert(t)
 
 	test.Case("balance", acc1, big.NewInt(0)).
