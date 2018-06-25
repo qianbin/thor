@@ -5,34 +5,25 @@
 
 pragma solidity 0.4.24;
 
-/// @title Extension extends EVM functions.
-
+/// @title Extension extends EVM global functions.
 contract Extension {
-    function blake2b256(bytes _value) public view returns(bytes32) {
-        return ExtensionNative(this).native_blake2b256(_value);
+    function blake2b256(bytes data) public view returns(bytes32) {
+        return ExtensionNative(this).native_blake2b256(data);
     }
 
     function blockID(uint num) public view returns(bytes32) {
-        if(num >= block.number)
-            return;
         return ExtensionNative(this).native_blockID(uint32(num));
     }
 
     function blockTotalScore(uint num) public view returns(uint64) {
-        if(num > block.number)
-            return;
         return ExtensionNative(this).native_blockTotalScore(uint32(num));
     }
 
     function blockTime(uint num) public view returns(uint) {
-        if(num > block.number)
-            return;
         return ExtensionNative(this).native_blockTime(uint32(num));
     }
 
     function blockSigner(uint num) public view returns(address) {
-        if(num > block.number)
-            return;
         return ExtensionNative(this).native_blockSigner(uint32(num));
     }
 
@@ -58,7 +49,7 @@ contract Extension {
 }
 
 contract ExtensionNative {
-    function native_blake2b256(bytes _value) public view returns(bytes32);
+    function native_blake2b256(bytes data) public view returns(bytes32);
     function native_blockID(uint32 num) public view returns(bytes32);
     function native_blockTotalScore(uint32 num) public view returns(uint64);
     function native_blockTime(uint32 num) public view returns(uint64);
