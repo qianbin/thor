@@ -58,7 +58,6 @@
     "accounts/abi",
     "accounts/keystore",
     "common",
-    "common/fdlimit",
     "common/hexutil",
     "common/math",
     "common/mclock",
@@ -288,6 +287,14 @@
   revision = "c3a204f8e96543bb0cc090385c001078f184fc46"
 
 [[projects]]
+  digest = "1:8fe1bf6222077787bf88db4eae509f1c910743be1b82e1a6a57444fe092fc4a5"
+  name = "go.etcd.io/bbolt"
+  packages = ["."]
+  pruneopts = ""
+  revision = "63597a96ec0ad9e6d43c3fc81e809909e0237461"
+  version = "v1.3.2"
+
+[[projects]]
   branch = "master"
   digest = "1:793a79198b755828dec284c6f1325e24e09186f1b7ba818b65c7c35104ed86eb"
   name = "golang.org/x/crypto"
@@ -403,7 +410,6 @@
     "github.com/ethereum/go-ethereum/accounts/abi",
     "github.com/ethereum/go-ethereum/accounts/keystore",
     "github.com/ethereum/go-ethereum/common",
-    "github.com/ethereum/go-ethereum/common/fdlimit",
     "github.com/ethereum/go-ethereum/common/hexutil",
     "github.com/ethereum/go-ethereum/common/math",
     "github.com/ethereum/go-ethereum/common/mclock",
@@ -432,6 +438,7 @@
     "github.com/mattn/go-tty",
     "github.com/pborman/uuid",
     "github.com/pkg/errors",
+    "github.com/pmezard/go-difflib/difflib",
     "github.com/rcrowley/go-metrics",
     "github.com/stretchr/testify/assert",
     "github.com/syndtr/goleveldb/leveldb",
@@ -440,6 +447,7 @@
     "github.com/syndtr/goleveldb/leveldb/opt",
     "github.com/syndtr/goleveldb/leveldb/storage",
     "github.com/syndtr/goleveldb/leveldb/util",
+    "go.etcd.io/bbolt",
     "golang.org/x/crypto/blake2b",
     "golang.org/x/crypto/ripemd160",
     "gopkg.in/cheggaaa/pb.v1",

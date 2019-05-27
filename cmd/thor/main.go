@@ -26,8 +26,8 @@ import (
 	"github.com/vechain/thor/cmd/thor/node"
 	"github.com/vechain/thor/cmd/thor/solo"
 	"github.com/vechain/thor/genesis"
+	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/logdb"
-	"github.com/vechain/thor/lvldb"
 	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/txpool"
@@ -199,7 +199,7 @@ func soloAction(ctx *cli.Context) error {
 	// Solo forks from the start
 	forkConfig := thor.ForkConfig{}
 
-	var mainDB *lvldb.LevelDB
+	var mainDB kv.GetPutCloser
 	var logDB *logdb.LogDB
 	var instanceDir string
 
