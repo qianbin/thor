@@ -3,6 +3,11 @@ package boltdb
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/vechain/thor/co"
 
 	"github.com/vechain/thor/kv"
 	"go.etcd.io/bbolt"
@@ -15,32 +20,110 @@ var (
 )
 
 type BoltDB struct {
-	db *bbolt.DB
+	db      *bbolt.DB
+	j1      *journal
+	j2      *journal
+	lock    sync.Mutex
+	goes    co.Goes
+	flushCh chan struct{}
 }
 
 func New(path string) (*BoltDB, error) {
-	db, err := bbolt.Open(path, 0600, &bbolt.Options{NoSync: true})
+	db, err := bbolt.Open(path, 0600, &bbolt.Options{})
 	if err != nil {
 		return nil, err
 	}
 
 	if err := db.Update(func(tx *bbolt.Tx) error {
 		_, err := tx.CreateBucketIfNotExists(defaultBucket)
-		if err != nil {
-			return err
-		}
-		return nil
+		return err
 	}); err != nil {
 		return nil, err
 	}
-	return &BoltDB{db}, nil
+	bdb := &BoltDB{db: db, flushCh: make(chan struct{})}
+	bdb.goes.Go(bdb.journalWriter)
+	return bdb, nil
+}
+
+func (bdb *BoltDB) journalWriter() {
+	ticker := time.NewTicker(time.Second * 2)
+	defer ticker.Stop()
+
+	end := false
+	for !end {
+		select {
+		case <-ticker.C:
+		case <-bdb.flushCh:
+			end = true
+		}
+
+		bdb.lock.Lock()
+		if bdb.j2 == nil {
+			bdb.j2 = bdb.j1
+			bdb.j1 = nil
+		}
+		bdb.lock.Unlock()
+		j := bdb.j2
+		if j != nil {
+			if err := bdb.db.Update(func(tx *bbolt.Tx) error {
+				bucket := tx.Bucket(defaultBucket)
+				for _, a := range j.actions {
+					if a.value == nil {
+						if err := bucket.Delete(a.key); err != nil {
+							return err
+						}
+					} else {
+						if err := bucket.Put(a.key, *a.value); err != nil {
+							return err
+						}
+					}
+				}
+				return nil
+			}); err != nil {
+				fmt.Println(err)
+			} else {
+				bdb.lock.Lock()
+				bdb.j2 = nil
+				bdb.lock.Unlock()
+				fmt.Println(j.Len())
+			}
+		}
+	}
 }
 
 func (bdb *BoltDB) IsNotFound(err error) bool {
 	return err == errNotFound
 }
 
+func (bdb *BoltDB) getFromJournal(key []byte) *entry {
+
+	if bdb.j1 != nil {
+		ent := bdb.j1.Get(key)
+		if ent != nil {
+			return ent
+		}
+	}
+	if bdb.j2 != nil {
+		ent := bdb.j2.Get(key)
+		if ent != nil {
+			return ent
+		}
+	}
+	return nil
+}
+
 func (bdb *BoltDB) Get(key []byte) (value []byte, err error) {
+	bdb.lock.Lock()
+	ent := bdb.getFromJournal(key)
+	bdb.lock.Unlock()
+	if ent != nil {
+		if ent.deleted {
+			return nil, errNotFound
+		} else {
+			return append([]byte(nil), ent.value...), nil
+		}
+	}
+
 	err = bdb.db.View(func(tx *bbolt.Tx) error {
 		v := tx.Bucket(defaultBucket).Get(key)
 		if v == nil {
@@ -53,6 +136,11 @@ func (bdb *BoltDB) Get(key []byte) (value []byte, err error) {
 }
 
 func (bdb *BoltDB) Has(key []byte) (exists bool, err error) {
+	ent := bdb.getFromJournal(key)
+	if ent != nil {
+		return !ent.deleted, nil
+	}
+
 	err = bdb.db.View(func(tx *bbolt.Tx) error {
 		v := tx.Bucket(defaultBucket).Get(key)
 		exists = v != nil
@@ -60,51 +148,71 @@ func (bdb *BoltDB) Has(key []byte) (exists bool, err error) {
 	})
 	return
 }
+
+func (bdb *BoltDB) putJournal(key []byte, value *[]byte) {
+	if bdb.j1 == nil {
+		bdb.j1 = newJournal()
+	}
+
+	if value == nil {
+		bdb.j1.Delete(key)
+	} else {
+		bdb.j1.Put(key, *value)
+	}
+}
+
 func (bdb *BoltDB) Put(key, value []byte) error {
-	return bdb.db.Update(func(tx *bbolt.Tx) error {
-		return tx.Bucket(defaultBucket).Put(key, value)
-	})
+	bdb.lock.Lock()
+	bdb.putJournal(key, &value)
+	bdb.lock.Unlock()
+	// return bdb.db.Update(func(tx *bbolt.Tx) error {
+	// 	return tx.Bucket(defaultBucket).Put(key, value)
+	// })
+	return nil
 }
 
 func (bdb *BoltDB) Delete(key []byte) error {
-	return bdb.db.Update(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(defaultBucket)
-		if bucket.Get(key) == nil {
-			return errNotFound
-		}
-		return bucket.Delete(key)
-	})
+	bdb.putJournal(key, nil)
+	// return bdb.db.Update(func(tx *bbolt.Tx) error {
+	// 	bucket := tx.Bucket(defaultBucket)
+	// 	return bucket.Delete(key)
+	// })
+	return nil
 }
 
 func (bdb *BoltDB) Close() error {
+	close(bdb.flushCh)
+	bdb.goes.Wait()
 	return bdb.db.Close()
 }
 
 func (bdb *BoltDB) NewBatch() kv.Batch {
-	return &batch{db: bdb.db}
+	return &batch{db: bdb}
 }
+
 func (bdb *BoltDB) NewIterator(r kv.Range) kv.Iterator {
-	return newIterator(bdb.db, r)
+	panic("not implemented")
+	// return newIterator(bdb.db, r)
 }
 
 type batch struct {
-	db  *bbolt.DB
-	ops []func(bucket *bbolt.Bucket) error
+	db      *BoltDB
+	actions []*action
 }
 
 func (b *batch) Put(key, value []byte) error {
 	key = append([]byte(nil), key...)
 	value = append([]byte(nil), value...)
-	b.ops = append(b.ops, func(bucket *bbolt.Bucket) error {
-		return bucket.Put(key, value)
+	b.actions = append(b.actions, &action{
+		key, &value,
 	})
 	return nil
 }
 
 func (b *batch) Delete(key []byte) error {
 	key = append([]byte(nil), key...)
-	b.ops = append(b.ops, func(bucket *bbolt.Bucket) error {
-		return bucket.Delete(key)
+	b.actions = append(b.actions, &action{
+		key, nil,
 	})
 	return nil
 }
@@ -114,19 +222,17 @@ func (b *batch) NewBatch() kv.Batch {
 }
 
 func (b *batch) Len() int {
-	return len(b.ops)
+	return len(b.actions)
 }
 
 func (b *batch) Write() error {
-	return b.db.Update(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(defaultBucket)
-		for _, op := range b.ops {
-			if err := op(bucket); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	b.db.lock.Lock()
+	defer b.db.lock.Unlock()
+
+	for _, a := range b.actions {
+		b.db.putJournal(a.key, a.value)
+	}
+	return nil
 }
 
 type iterator struct {
