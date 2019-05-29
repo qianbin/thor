@@ -17,14 +17,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vechain/thor/kv"
+
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/fdlimit"
 	"github.com/ethereum/go-ethereum/crypto"
 	ethlog "github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p/discover"
 	"github.com/ethereum/go-ethereum/p2p/nat"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/inconshreveable/log15"
+	"github.com/vechain/thor/badgerdb"
 	"github.com/vechain/thor/chain"
 	"github.com/vechain/thor/cmd/thor/node"
 	"github.com/vechain/thor/co"
@@ -127,29 +129,36 @@ func makeInstanceDir(ctx *cli.Context, gene *genesis.Genesis) string {
 	return instanceDir
 }
 
-func openMainDB(ctx *cli.Context, dataDir string) *lvldb.LevelDB {
-	limit, err := fdlimit.Current()
-	if err != nil {
-		fatal("failed to get fd limit:", err)
-	}
-	if limit <= 1024 {
-		log.Warn("low fd limit, increase it if possible", "limit", limit)
-	}
-
-	fileCache := limit / 2
-	if fileCache > 1024 {
-		fileCache = 1024
-	}
-
-	dir := filepath.Join(dataDir, "main.db")
-	db, err := lvldb.New(dir, lvldb.Options{
-		CacheSize:              256,
-		OpenFilesCacheCapacity: fileCache,
-	})
+func openMainDB(ctx *cli.Context, dataDir string) kv.GetPutCloser {
+	dir := filepath.Join(dataDir, "main.badger.db")
+	db, err := badgerdb.New(dir)
 	if err != nil {
 		fatal(fmt.Sprintf("open chain database [%v]: %v", dir, err))
 	}
 	return db
+
+	// limit, err := fdlimit.Current()
+	// if err != nil {
+	// 	fatal("failed to get fd limit:", err)
+	// }
+	// if limit <= 1024 {
+	// 	log.Warn("low fd limit, increase it if possible", "limit", limit)
+	// }
+
+	// fileCache := limit / 2
+	// if fileCache > 1024 {
+	// 	fileCache = 1024
+	// }
+
+	// dir := filepath.Join(dataDir, "main.db")
+	// db, err := lvldb.New(dir, lvldb.Options{
+	// 	CacheSize:              256,
+	// 	OpenFilesCacheCapacity: fileCache,
+	// })
+	// if err != nil {
+	// 	fatal(fmt.Sprintf("open chain database [%v]: %v", dir, err))
+	// }
+	// return db
 }
 
 func openLogDB(ctx *cli.Context, dataDir string) *logdb.LogDB {
@@ -161,7 +170,7 @@ func openLogDB(ctx *cli.Context, dataDir string) *logdb.LogDB {
 	return db
 }
 
-func initChain(gene *genesis.Genesis, mainDB *lvldb.LevelDB, logDB *logdb.LogDB) *chain.Chain {
+func initChain(gene *genesis.Genesis, mainDB kv.GetPutter, logDB *logdb.LogDB) *chain.Chain {
 	genesisBlock, genesisEvents, err := gene.Build(state.NewCreator(mainDB))
 	if err != nil {
 		fatal("build genesis block: ", err)
