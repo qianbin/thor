@@ -2,6 +2,18 @@
 
 
 [[projects]]
+  digest = "1:38a2e49870a191be47bfed85d0c8fefea28cf031fa8c542674409eb619c7504e"
+  name = "github.com/akrylysov/pogreb"
+  packages = [
+    ".",
+    "fs",
+    "hash",
+  ]
+  pruneopts = ""
+  revision = "1d4aa606ddc59540a450f774b67e4ea3ccde2167"
+  version = "v0.8"
+
+[[projects]]
   branch = "master"
   digest = "1:995f2346b013b59bbddd0edb81fc5dfd00e0621a80a64e19b9cf263404f9b38e"
   name = "github.com/aristanetworks/goarista"
@@ -58,7 +70,6 @@
     "accounts/abi",
     "accounts/keystore",
     "common",
-    "common/fdlimit",
     "common/hexutil",
     "common/math",
     "common/mclock",
@@ -397,13 +408,13 @@
   analyzer-name = "dep"
   analyzer-version = 1
   input-imports = [
+    "github.com/akrylysov/pogreb",
     "github.com/beevik/ntp",
     "github.com/davecgh/go-spew/spew",
     "github.com/elazarl/go-bindata-assetfs",
     "github.com/ethereum/go-ethereum/accounts/abi",
     "github.com/ethereum/go-ethereum/accounts/keystore",
     "github.com/ethereum/go-ethereum/common",
-    "github.com/ethereum/go-ethereum/common/fdlimit",
     "github.com/ethereum/go-ethereum/common/hexutil",
     "github.com/ethereum/go-ethereum/common/math",
     "github.com/ethereum/go-ethereum/common/mclock",
@@ -432,6 +443,7 @@
     "github.com/mattn/go-tty",
     "github.com/pborman/uuid",
     "github.com/pkg/errors",
+    "github.com/pmezard/go-difflib/difflib",
     "github.com/rcrowley/go-metrics",
     "github.com/stretchr/testify/assert",
     "github.com/syndtr/goleveldb/leveldb",
