@@ -19,7 +19,7 @@ type PogrebDB struct {
 
 func New(path string) (*PogrebDB, error) {
 
-	db, err := pogreb.Open(path, &pogreb.Options{BackgroundSyncInterval: 5 * time.Second})
+	db, err := pogreb.Open(path, &pogreb.Options{BackgroundSyncInterval: time.Second})
 	if err != nil {
 		return nil, err
 	}
