@@ -24,56 +24,56 @@ func verifyLogDB(ctx context.Context, endBlockNum uint32, chain *chain.Chain, lo
 		Start()
 	defer func() { pb.NotPrint = true }()
 
-	from := uint32(1)
-	for from < endBlockNum {
-		to := from + 255
-		if to > endBlockNum {
-			to = endBlockNum
-		}
+	bestID := chain.BestBlock().Header().ID()
 
-		blocks, err := fastReadBlocks(chain, from, to)
+	it := chain.NewIterator(bestID, 1)
+	for it.Next() {
+		b := it.Block()
+		n := b.Header().Number()
+		if n > endBlockNum {
+			break
+		}
+		evLogs, err := logDB.FilterEvents(context.TODO(), &logdb.EventFilter{
+			Range: &logdb.Range{
+				Unit: "block",
+				From: uint64(n),
+				To:   uint64(n),
+			},
+		})
 		if err != nil {
 			return err
 		}
-		for _, b := range blocks {
-			n := b.Header().Number()
-			evLogs, err := logDB.FilterEvents(context.TODO(), &logdb.EventFilter{
-				Range: &logdb.Range{
-					Unit: "block",
-					From: uint64(n),
-					To:   uint64(n),
-				},
-			})
-			if err != nil {
-				return err
-			}
-			trLogs, err := logDB.FilterTransfers(context.TODO(), &logdb.TransferFilter{
-				Range: &logdb.Range{
-					Unit: "block",
-					From: uint64(n),
-					To:   uint64(n),
-				},
-			})
-			if err != nil {
-				return err
-			}
-
-			receipts, err := chain.GetBlockReceipts(b.Header().ID())
-			if err != nil {
-				return err
-			}
-			if err := verifyLogDBPerBlock(b, receipts, evLogs, trLogs); err != nil {
-				return err
-			}
-			pb.Add64(1)
+		trLogs, err := logDB.FilterTransfers(context.TODO(), &logdb.TransferFilter{
+			Range: &logdb.Range{
+				Unit: "block",
+				From: uint64(n),
+				To:   uint64(n),
+			},
+		})
+		if err != nil {
+			return err
 		}
-		from = to + 1
+
+		receipts, err := chain.GetBlockReceipts(b.Header().ID())
+		if err != nil {
+			return err
+		}
+		if err := verifyLogDBPerBlock(b, receipts, evLogs, trLogs); err != nil {
+			return err
+		}
+		pb.Add64(1)
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
 	}
+
+	if err := it.Error(); err != nil {
+		return err
+	}
+
 	pb.Finish()
 	return nil
 }

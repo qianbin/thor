@@ -473,3 +473,8 @@ func (t *Task) Commit() error {
 	}
 	return tx.Commit()
 }
+
+// Size return count of queries included in this task.
+func (t *Task) Size() int {
+	return len(t.queries)
+}
