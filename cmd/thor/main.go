@@ -154,6 +154,16 @@ func defaultAction(ctx *cli.Context) error {
 	txPool := txpool.New(chain, state.NewCreator(mainDB), defaultTxPoolOptions)
 	defer func() { log.Info("closing tx pool..."); txPool.Close() }()
 
+	file, _ := os.Create("state-dump.rlp")
+
+	pb := pb.New(1000000)
+	pb.Start()
+	exportState(chain, mainDB, file, 1000000)
+
+	pb.Finish()
+
+	return nil
+
 	p2pcom := newP2PComm(ctx, chain, txPool, instanceDir)
 	apiHandler, apiCloser := api.New(
 		chain,
