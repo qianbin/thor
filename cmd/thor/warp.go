@@ -56,10 +56,11 @@ func exportState(chain *chain.Chain, kv kv.GetPutter, w io.Writer, endBlockNum u
 
 	for cIter.Next() {
 		block := cIter.Block()
+		if block.Header().Number() > endBlockNum {
+			break
+		}
 		baseTrie = newTrie
-
 		newTrie, err = trie.New(block.Header().StateRoot(), kv)
-
 		if err != nil {
 			return err
 		}
@@ -78,7 +79,46 @@ func exportState(chain *chain.Chain, kv kv.GetPutter, w io.Writer, endBlockNum u
 				if err := rlp.DecodeBytes(leafBlob, &acc); err != nil {
 					return err
 				}
-
+				if len(acc.StorageRoot) > 0 {
+					var (
+						baseStorageTrie *trie.Trie
+						newStorageTrie  *trie.Trie
+					)
+					if baseTrie != nil {
+						v, err := baseTrie.TryGet(leafKey)
+						if err != nil {
+							return err
+						}
+						var baseAcc state.Account
+						if err := rlp.DecodeBytes(v, &baseAcc); err != nil {
+							return err
+						}
+						if len(baseAcc.StorageRoot) > 0 {
+							baseStorageTrie, err = trie.New(thor.BytesToBytes32(baseAcc.StorageRoot), kv)
+							if err != nil {
+								return err
+							}
+						}
+					}
+					newStorageTrie, err = trie.New(thor.BytesToBytes32(acc.StorageRoot), kv)
+					if err != nil {
+						return err
+					}
+					if err := dumpTrie(baseStorageTrie, newStorageTrie, func(hash thor.Bytes32, leafKey []byte, leafBlob []byte) error {
+						if hash != (thor.Bytes32{}) {
+							node, err := kv.Get(hash[:])
+							if err != nil {
+								return err
+							}
+							if _, err := w.Write(node); err != nil {
+								return err
+							}
+						}
+						return nil
+					}); err != nil {
+						return err
+					}
+				}
 			}
 			return nil
 		}); err != nil {
