@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 
 	"github.com/ethereum/go-ethereum/rlp"
@@ -89,14 +90,16 @@ func exportState(chain *chain.Chain, kv kv.GetPutter, w io.Writer, endBlockNum u
 						if err != nil {
 							return err
 						}
-						var baseAcc state.Account
-						if err := rlp.DecodeBytes(v, &baseAcc); err != nil {
-							return err
-						}
-						if len(baseAcc.StorageRoot) > 0 {
-							baseStorageTrie, err = trie.New(thor.BytesToBytes32(baseAcc.StorageRoot), kv)
-							if err != nil {
+						if len(v) > 0 {
+							var baseAcc state.Account
+							if err := rlp.DecodeBytes(v, &baseAcc); err != nil {
 								return err
+							}
+							if len(baseAcc.StorageRoot) > 0 {
+								baseStorageTrie, err = trie.New(thor.BytesToBytes32(baseAcc.StorageRoot), kv)
+								if err != nil {
+									return err
+								}
 							}
 						}
 					}
@@ -125,6 +128,7 @@ func exportState(chain *chain.Chain, kv kv.GetPutter, w io.Writer, endBlockNum u
 			return err
 		}
 	}
+	fmt.Println("done")
 	return cIter.Error()
 }
 

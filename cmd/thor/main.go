@@ -158,7 +158,7 @@ func defaultAction(ctx *cli.Context) error {
 
 	pb := pb.New(1000000)
 	pb.Start()
-	exportState(chain, mainDB, file, 1000000)
+	return exportState(chain, mainDB, file, 1000000)
 
 	pb.Finish()
 
