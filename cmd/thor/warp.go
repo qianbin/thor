@@ -8,7 +8,6 @@ import (
 	"github.com/vechain/thor/block"
 	"github.com/vechain/thor/chain"
 	"github.com/vechain/thor/kv"
-	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/trie"
 	"github.com/vechain/thor/tx"
@@ -71,58 +70,59 @@ func exportState(chain *chain.Chain, kv kv.GetPutter, w io.Writer, endBlockNum u
 				if err != nil {
 					return err
 				}
+				fmt.Println(len(node))
 				if _, err := w.Write(node); err != nil {
 					return err
 				}
 			}
-			if len(leafBlob) > 0 {
-				var acc state.Account
-				if err := rlp.DecodeBytes(leafBlob, &acc); err != nil {
-					return err
-				}
-				if len(acc.StorageRoot) > 0 {
-					var (
-						baseStorageTrie *trie.Trie
-						newStorageTrie  *trie.Trie
-					)
-					if baseTrie != nil {
-						v, err := baseTrie.TryGet(leafKey)
-						if err != nil {
-							return err
-						}
-						if len(v) > 0 {
-							var baseAcc state.Account
-							if err := rlp.DecodeBytes(v, &baseAcc); err != nil {
-								return err
-							}
-							if len(baseAcc.StorageRoot) > 0 {
-								baseStorageTrie, err = trie.New(thor.BytesToBytes32(baseAcc.StorageRoot), kv)
-								if err != nil {
-									return err
-								}
-							}
-						}
-					}
-					newStorageTrie, err = trie.New(thor.BytesToBytes32(acc.StorageRoot), kv)
-					if err != nil {
-						return err
-					}
-					if err := dumpTrie(baseStorageTrie, newStorageTrie, func(hash thor.Bytes32, leafKey []byte, leafBlob []byte) error {
-						if hash != (thor.Bytes32{}) {
-							node, err := kv.Get(hash[:])
-							if err != nil {
-								return err
-							}
-							if _, err := w.Write(node); err != nil {
-								return err
-							}
-						}
-						return nil
-					}); err != nil {
-						return err
-					}
-				}
-			}
+			// if len(leafBlob) > 0 {
+			// 	var acc state.Account
+			// 	if err := rlp.DecodeBytes(leafBlob, &acc); err != nil {
+			// 		return err
+			// 	}
+			// 	if len(acc.StorageRoot) > 0 {
+			// 		var (
+			// 			baseStorageTrie *trie.Trie
+			// 			newStorageTrie  *trie.Trie
+			// 		)
+			// 		if baseTrie != nil {
+			// 			v, err := baseTrie.TryGet(leafKey)
+			// 			if err != nil {
+			// 				return err
+			// 			}
+			// 			if len(v) > 0 {
+			// 				var baseAcc state.Account
+			// 				if err := rlp.DecodeBytes(v, &baseAcc); err != nil {
+			// 					return err
+			// 				}
+			// 				if len(baseAcc.StorageRoot) > 0 {
+			// 					baseStorageTrie, err = trie.New(thor.BytesToBytes32(baseAcc.StorageRoot), kv)
+			// 					if err != nil {
+			// 						return err
+			// 					}
+			// 				}
+			// 			}
+			// 		}
+			// 		newStorageTrie, err = trie.New(thor.BytesToBytes32(acc.StorageRoot), kv)
+			// 		if err != nil {
+			// 			return err
+			// 		}
+			// 		if err := dumpTrie(baseStorageTrie, newStorageTrie, func(hash thor.Bytes32, leafKey []byte, leafBlob []byte) error {
+			// 			if hash != (thor.Bytes32{}) {
+			// 				node, err := kv.Get(hash[:])
+			// 				if err != nil {
+			// 					return err
+			// 				}
+			// 				if _, err := w.Write(node); err != nil {
+			// 					return err
+			// 				}
+			// 			}
+			// 			return nil
+			// 		}); err != nil {
+			// 			return err
+			// 		}
+			// 	}
+			// }
 			return nil
 		}); err != nil {
 			return err

@@ -12,8 +12,12 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"time"
 
+	"github.com/vechain/thor/kv"
+
+	"github.com/allegro/bigcache"
 	"github.com/ethereum/go-ethereum/accounts/keystore"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/inconshreveable/log15"
@@ -30,6 +34,7 @@ import (
 	"github.com/vechain/thor/lvldb"
 	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
+	"github.com/vechain/thor/trie"
 	"github.com/vechain/thor/txpool"
 	"gopkg.in/cheggaaa/pb.v1"
 	cli "gopkg.in/urfave/cli.v1"
@@ -123,6 +128,39 @@ func main() {
 	}
 }
 
+type RCache struct {
+	big *bigcache.BigCache
+}
+
+func NewRCache() *RCache {
+	c, _ := bigcache.NewBigCache(bigcache.DefaultConfig(10 * time.Minute))
+	return &RCache{c}
+}
+
+func (r *RCache) Wrap(kv kv.GetPutter) kv.GetPutter {
+	return &x{r.big, kv}
+}
+
+type x struct {
+	big *bigcache.BigCache
+	kv.GetPutter
+}
+
+func (x *x) Get(key []byte) ([]byte, error) {
+	v, err := x.big.Get(string(key))
+	if err != nil {
+		v, err = x.GetPutter.Get(key)
+		if err != nil {
+			return nil, err
+		}
+		x.big.Set(string(key), v)
+		return v, nil
+	}
+	return v, nil
+}
+
+var rc = NewRCache()
+
 func defaultAction(ctx *cli.Context) error {
 	exitSignal := handleExitSignal()
 
@@ -154,13 +192,85 @@ func defaultAction(ctx *cli.Context) error {
 	txPool := txpool.New(chain, state.NewCreator(mainDB), defaultTxPoolOptions)
 	defer func() { log.Info("closing tx pool..."); txPool.Close() }()
 
-	file, _ := os.Create("state-dump.rlp")
+	bl, _ := chain.GetTrunkBlock(300000)
 
-	pb := pb.New(1000000)
-	pb.Start()
-	return exportState(chain, mainDB, file, 1000000)
+	t := time.Now().UnixNano()
 
-	pb.Finish()
+	cpuf, err := os.Create("cpu_profile")
+	if err != nil {
+		return err
+	}
+	pprof.StartCPUProfile(cpuf)
+	defer pprof.StopCPUProfile()
+	for i := 0; i < 10; i++ {
+
+		tr, _ := trie.New(bl.Header().StateRoot(), rc.Wrap(mainDB))
+		it := tr.NodeIterator(nil)
+		n := 0
+		for it.Next(true) {
+			n++
+		}
+		// fmt.Println(time.Duration(time.Now().UnixNano() - t))
+		fmt.Println(n)
+	}
+	fmt.Println(time.Duration(time.Now().UnixNano() - t))
+
+	// file, _ := os.Open("state-dump.rlp")
+
+	// n := 0
+	// duped := 0
+	// m := make(map[thor.Bytes32]bool)
+
+	// s := rlp.NewStream(file, 0)
+
+	// for {
+	// 	raw, err := s.Raw()
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	n++
+	// 	hash := thor.Blake2b(raw)
+	// 	if m[hash] {
+	// 		duped++
+	// 	} else {
+	// 		m[hash] = true
+	// 	}
+	// 	if n%10000 == 0 {
+	// 		fmt.Println(n, duped)
+	// 	}
+	// }
+
+	// root := chain.BestBlock().Header().StateRoot()
+
+	// m := make(map[thor.Bytes32][]byte)
+	// m[root] = root.Bytes()
+	// t := time.Now().UnixNano()
+	// // cpuf, err := os.Create("cpu_profile")
+	// // if err != nil {
+	// // 	return err
+	// // }
+	// // pprof.StartCPUProfile(cpuf)
+	// // defer pprof.StopCPUProfile()
+	// var mu sync.Mutex
+
+	// for i := 0; i < 10000000; i++ {
+	// 	// if _, err := mainDB.Get(root.Bytes()); err != nil {
+	// 	// 	return err
+	// 	// }
+	// 	mu.Lock()
+	// 	b := m[root]
+	// 	_ = append([]byte(nil), b...)
+	// 	mu.Unlock()
+	// }
+	// fmt.Println(time.Duration(time.Now().UnixNano() - t))
+
+	// file, _ := os.Create("state-dump.rlp")
+
+	// // pb := pb.New(1000000)
+	// // pb.Start()
+	// return exportState(chain, mainDB, file, 100000)
+
+	// pb.Finish()
 
 	return nil
 
