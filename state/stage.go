@@ -6,18 +6,17 @@
 package state
 
 import (
-	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/trie"
+	"github.com/vechain/thor/triex"
 )
 
 // Stage abstracts changes on the main accounts trie.
 type Stage struct {
-	err error
+	err   error
+	triex *triex.Proxy
 
-	kv           kv.GetPutter
-	accountTrie  *trie.SecureTrie
-	storageTries []*trie.SecureTrie
+	accountTrie  triex.Trie
+	storageTries []triex.Trie
 	codes        []codeWithHash
 }
 
@@ -26,14 +25,11 @@ type codeWithHash struct {
 	hash []byte
 }
 
-func newStage(root thor.Bytes32, kv kv.GetPutter, changes map[thor.Address]*changedObject) *Stage {
+func newStage(trieProxy *triex.Proxy, root thor.Bytes32, changes map[thor.Address]*changedObject) *Stage {
 
-	accountTrie, err := trie.NewSecure(root, kv, 0)
-	if err != nil {
-		return &Stage{err: err}
-	}
+	accountTrie := trieProxy.NewTrie(root, true)
 
-	storageTries := make([]*trie.SecureTrie, 0, len(changes))
+	storageTries := make([]triex.Trie, 0, len(changes))
 	codes := make([]codeWithHash, 0, len(changes))
 
 	for addr, obj := range changes {
@@ -48,13 +44,10 @@ func newStage(root thor.Bytes32, kv kv.GetPutter, changes map[thor.Address]*chan
 		// skip storage changes if account is empty
 		if !dataCpy.IsEmpty() {
 			if len(obj.storage) > 0 {
-				strie, err := trie.NewSecure(thor.BytesToBytes32(dataCpy.StorageRoot), kv, 0)
-				if err != nil {
-					return &Stage{err: err}
-				}
+				strie := trieProxy.NewTrie(thor.BytesToBytes32(dataCpy.StorageRoot), true)
 				storageTries = append(storageTries, strie)
 				for k, v := range obj.storage {
-					if err := saveStorage(strie, k, v); err != nil {
+					if err := strie.Update(k[:], v); err != nil {
 						return &Stage{err: err}
 					}
 				}
@@ -67,7 +60,7 @@ func newStage(root thor.Bytes32, kv kv.GetPutter, changes map[thor.Address]*chan
 		}
 	}
 	return &Stage{
-		kv:           kv,
+		triex:        trieProxy,
 		accountTrie:  accountTrie,
 		storageTries: storageTries,
 		codes:        codes,
@@ -87,29 +80,25 @@ func (s *Stage) Commit() (thor.Bytes32, error) {
 	if s.err != nil {
 		return thor.Bytes32{}, s.err
 	}
-	batch := s.kv.NewBatch()
+
 	// write codes
 	for _, code := range s.codes {
-		if err := batch.Put(code.hash, code.code); err != nil {
+		if err := s.triex.PutPreimage(code.hash, code.code); err != nil {
 			return thor.Bytes32{}, err
 		}
 	}
 
 	// commit storage tries
 	for _, strie := range s.storageTries {
-		_, err := strie.CommitTo(batch)
+		_, err := strie.Commit()
 		if err != nil {
 			return thor.Bytes32{}, err
 		}
 	}
 
 	// commit accounts trie
-	root, err := s.accountTrie.CommitTo(batch)
+	root, err := s.accountTrie.Commit()
 	if err != nil {
-		return thor.Bytes32{}, err
-	}
-
-	if err := batch.Write(); err != nil {
 		return thor.Bytes32{}, err
 	}
 

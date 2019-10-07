@@ -20,10 +20,10 @@ import (
 	"github.com/vechain/thor/chain"
 	"github.com/vechain/thor/consensus"
 	"github.com/vechain/thor/runtime"
-	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/tracers"
 	"github.com/vechain/thor/trie"
+	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/vm"
 )
 
@@ -31,14 +31,14 @@ var devNetGenesisID = thor.MustParseBytes32("0x00000000973ceb7f343a58b08f0693d67
 
 type Debug struct {
 	chain      *chain.Chain
-	stateC     *state.Creator
+	triex      *triex.Proxy
 	forkConfig thor.ForkConfig
 }
 
-func New(chain *chain.Chain, stateC *state.Creator, forkConfig thor.ForkConfig) *Debug {
+func New(chain *chain.Chain, triex *triex.Proxy, forkConfig thor.ForkConfig) *Debug {
 	return &Debug{
 		chain,
-		stateC,
+		triex,
 		forkConfig,
 	}
 }
@@ -61,7 +61,7 @@ func (d *Debug) handleTxEnv(ctx context.Context, blockID thor.Bytes32, txIndex u
 	skipPoA := d.chain.GenesisBlock().Header().ID() == devNetGenesisID
 	rt, err := consensus.New(
 		d.chain,
-		d.stateC,
+		d.triex,
 		d.forkConfig,
 	).NewRuntimeForReplay(block.Header(), skipPoA)
 	if err != nil {
@@ -169,10 +169,10 @@ func (d *Debug) debugStorage(ctx context.Context, contractAddress thor.Address, 
 	if err != nil {
 		return nil, err
 	}
-	return storageRangeAt(storageTrie, keyStart, maxResult)
+	return storageRangeAt(d.triex, storageTrie, keyStart, maxResult)
 }
 
-func storageRangeAt(t *trie.SecureTrie, start []byte, maxResult int) (*StorageRangeResult, error) {
+func storageRangeAt(triex *triex.Proxy, t triex.Trie, start []byte, maxResult int) (*StorageRangeResult, error) {
 	it := trie.NewIterator(t.NodeIterator(start))
 	result := StorageRangeResult{Storage: StorageMap{}}
 	for i := 0; i < maxResult && it.Next(); i++ {
@@ -182,7 +182,7 @@ func storageRangeAt(t *trie.SecureTrie, start []byte, maxResult int) (*StorageRa
 		}
 		v := thor.BytesToBytes32(content)
 		e := StorageEntry{Value: &v}
-		if preimage := t.GetKey(it.Key); preimage != nil {
+		if preimage, err := triex.GetPreimage(it.Key); err == nil {
 			preimage := thor.BytesToBytes32(preimage)
 			e.Key = &preimage
 		}

@@ -36,9 +36,8 @@ import (
 	"github.com/vechain/thor/logdb"
 	"github.com/vechain/thor/lvldb"
 	"github.com/vechain/thor/p2psrv"
-	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/trie"
+	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/tx"
 	"github.com/vechain/thor/txpool"
 	cli "gopkg.in/urfave/cli.v1"
@@ -151,7 +150,7 @@ func openMainDB(ctx *cli.Context, dataDir string) *lvldb.LevelDB {
 	if err != nil {
 		fatal(fmt.Sprintf("open chain database [%v]: %v", dir, err))
 	}
-	trie.SetCache(trie.NewCache(cacheMB / 2))
+	// trie.SetCache(trie.NewCache(cacheMB / 2))
 	return db
 }
 
@@ -206,8 +205,8 @@ func openLogDB(ctx *cli.Context, dataDir string) *logdb.LogDB {
 	return db
 }
 
-func initChain(gene *genesis.Genesis, mainDB *lvldb.LevelDB, logDB *logdb.LogDB) *chain.Chain {
-	genesisBlock, genesisEvents, err := gene.Build(state.NewCreator(mainDB))
+func initChain(gene *genesis.Genesis, triex *triex.Proxy, mainDB *lvldb.LevelDB, logDB *logdb.LogDB) *chain.Chain {
+	genesisBlock, genesisEvents, err := gene.Build(triex)
 	if err != nil {
 		fatal("build genesis block: ", err)
 	}

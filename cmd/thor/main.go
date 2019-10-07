@@ -28,8 +28,8 @@ import (
 	"github.com/vechain/thor/genesis"
 	"github.com/vechain/thor/logdb"
 	"github.com/vechain/thor/lvldb"
-	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
+	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/txpool"
 	"gopkg.in/cheggaaa/pb.v1"
 	cli "gopkg.in/urfave/cli.v1"
@@ -140,7 +140,9 @@ func defaultAction(ctx *cli.Context) error {
 	logDB := openLogDB(ctx, instanceDir)
 	defer func() { log.Info("closing log database..."); logDB.Close() }()
 
-	chain := initChain(gene, mainDB, logDB)
+	triex := triex.New(mainDB, 0)
+
+	chain := initChain(gene, triex, mainDB, logDB)
 	master := loadNodeMaster(ctx)
 
 	printStartupMessage1(gene, chain, master, instanceDir, forkConfig)
@@ -151,13 +153,13 @@ func defaultAction(ctx *cli.Context) error {
 		}
 	}
 
-	txPool := txpool.New(chain, state.NewCreator(mainDB), defaultTxPoolOptions)
+	txPool := txpool.New(chain, triex, defaultTxPoolOptions)
 	defer func() { log.Info("closing tx pool..."); txPool.Close() }()
 
 	p2pcom := newP2PComm(ctx, chain, txPool, instanceDir)
 	apiHandler, apiCloser := api.New(
 		chain,
-		state.NewCreator(mainDB),
+		triex,
 		txPool,
 		logDB,
 		p2pcom.comm,
@@ -180,7 +182,7 @@ func defaultAction(ctx *cli.Context) error {
 	return node.New(
 		master,
 		chain,
-		state.NewCreator(mainDB),
+		triex,
 		logDB,
 		txPool,
 		filepath.Join(instanceDir, "tx.stash"),
@@ -217,17 +219,19 @@ func soloAction(ctx *cli.Context) error {
 	defer func() { log.Info("closing main database..."); mainDB.Close() }()
 	defer func() { log.Info("closing log database..."); logDB.Close() }()
 
-	chain := initChain(gene, mainDB, logDB)
+	triex := triex.New(mainDB, 0)
+
+	chain := initChain(gene, triex, mainDB, logDB)
 	if err := syncLogDB(exitSignal, chain, logDB, ctx.Bool(verifyLogsFlag.Name)); err != nil {
 		return err
 	}
 
-	txPool := txpool.New(chain, state.NewCreator(mainDB), defaultTxPoolOptions)
+	txPool := txpool.New(chain, triex, defaultTxPoolOptions)
 	defer func() { log.Info("closing tx pool..."); txPool.Close() }()
 
 	apiHandler, apiCloser := api.New(
 		chain,
-		state.NewCreator(mainDB),
+		triex,
 		txPool,
 		logDB,
 		solo.Communicator{},
@@ -245,7 +249,7 @@ func soloAction(ctx *cli.Context) error {
 	printSoloStartupMessage(gene, chain, instanceDir, apiURL, forkConfig)
 
 	return solo.New(chain,
-		state.NewCreator(mainDB),
+		triex,
 		logDB,
 		txPool,
 		uint64(ctx.Int("gas-limit")),

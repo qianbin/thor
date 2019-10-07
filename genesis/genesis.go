@@ -10,8 +10,8 @@ import (
 
 	"github.com/vechain/thor/abi"
 	"github.com/vechain/thor/block"
-	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
+	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/tx"
 )
 
@@ -23,8 +23,8 @@ type Genesis struct {
 }
 
 // Build build the genesis block.
-func (g *Genesis) Build(stateCreator *state.Creator) (blk *block.Block, events tx.Events, err error) {
-	block, events, err := g.builder.Build(stateCreator)
+func (g *Genesis) Build(triex *triex.Proxy) (blk *block.Block, events tx.Events, err error) {
+	block, events, err := g.builder.Build(triex)
 	if err != nil {
 		return nil, nil, err
 	}

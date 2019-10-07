@@ -7,43 +7,33 @@ package state
 
 import (
 	"github.com/ethereum/go-ethereum/rlp"
-	lru "github.com/hashicorp/golang-lru"
-	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/trie"
+	"github.com/vechain/thor/triex"
 )
-
-var codeCache, _ = lru.New(512)
 
 // cachedObject to cache code and storage of an account.
 type cachedObject struct {
-	kv   kv.GetPutter
-	data Account
+	triex *triex.Proxy
+	data  Account
 
 	cache struct {
 		code        []byte
-		storageTrie trieReader
+		storageTrie triex.Trie
 		storage     map[thor.Bytes32]rlp.RawValue
 	}
 }
 
-func newCachedObject(kv kv.GetPutter, data *Account) *cachedObject {
-	return &cachedObject{kv: kv, data: *data}
+func newCachedObject(triex *triex.Proxy, data *Account) *cachedObject {
+	return &cachedObject{triex: triex, data: *data}
 }
 
-func (co *cachedObject) getOrCreateStorageTrie() (trieReader, error) {
-	if co.cache.storageTrie != nil {
-		return co.cache.storageTrie, nil
+func (co *cachedObject) getOrCreateStorageTrie() triex.Trie {
+	if co.cache.storageTrie == nil {
+		co.cache.storageTrie = co.triex.NewTrie(
+			thor.BytesToBytes32(co.data.StorageRoot),
+			true)
 	}
-
-	root := thor.BytesToBytes32(co.data.StorageRoot)
-
-	trie, err := trie.NewSecure(root, co.kv, 0)
-	if err != nil {
-		return nil, err
-	}
-	co.cache.storageTrie = trie
-	return trie, nil
+	return co.cache.storageTrie
 }
 
 // GetStorage returns storage value for given key.
@@ -59,13 +49,10 @@ func (co *cachedObject) GetStorage(key thor.Bytes32) (rlp.RawValue, error) {
 	}
 	// not found in cache
 
-	trie, err := co.getOrCreateStorageTrie()
-	if err != nil {
-		return nil, err
-	}
+	trie := co.getOrCreateStorageTrie()
 
 	// load from trie
-	v, err := loadStorage(trie, key)
+	v, err := trie.Get(key[:])
 	if err != nil {
 		return nil, err
 	}
@@ -84,15 +71,11 @@ func (co *cachedObject) GetCode() ([]byte, error) {
 
 	if len(co.data.CodeHash) > 0 {
 		// do have code
-		if code, has := codeCache.Get(string(co.data.CodeHash)); has {
-			return code.([]byte), nil
-		}
 
-		code, err := co.kv.Get(co.data.CodeHash)
+		code, err := co.triex.GetPreimage(co.data.CodeHash)
 		if err != nil {
 			return nil, err
 		}
-		codeCache.Add(string(co.data.CodeHash), code)
 		cache.code = code
 		return code, nil
 	}

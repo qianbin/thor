@@ -27,8 +27,8 @@ import (
 	"github.com/vechain/thor/logdb"
 	"github.com/vechain/thor/lvldb"
 	"github.com/vechain/thor/packer"
-	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
+	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/tx"
 	"github.com/vechain/thor/txpool"
 )
@@ -55,7 +55,7 @@ type Node struct {
 func New(
 	master *Master,
 	chain *chain.Chain,
-	stateCreator *state.Creator,
+	triex *triex.Proxy,
 	logDB *logdb.LogDB,
 	txPool *txpool.TxPool,
 	txStashPath string,
@@ -65,8 +65,8 @@ func New(
 	forkConfig thor.ForkConfig,
 ) *Node {
 	return &Node{
-		packer:         packer.New(chain, stateCreator, master.Address(), master.Beneficiary, forkConfig),
-		cons:           consensus.New(chain, stateCreator, forkConfig),
+		packer:         packer.New(chain, triex, master.Address(), master.Beneficiary, forkConfig),
+		cons:           consensus.New(chain, triex, forkConfig),
 		master:         master,
 		chain:          chain,
 		logDB:          logDB,

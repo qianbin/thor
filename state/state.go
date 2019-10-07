@@ -12,45 +12,27 @@ import (
 
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/stackedmap"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/trie"
+	"github.com/vechain/thor/triex"
 )
 
 // State manages the main accounts trie.
 type State struct {
-	root     thor.Bytes32 // root of initial accounts trie
-	kv       kv.GetPutter
-	trie     trieReader                     // the accounts trie reader
+	triex    *triex.Proxy
+	root     thor.Bytes32                   // root of initial accounts trie
+	trie     triex.Trie                     // the accounts trie
 	cache    map[thor.Address]*cachedObject // cache of accounts trie
 	sm       *stackedmap.StackedMap         // keeps revisions of accounts state
 	err      error
 	setError func(err error)
 }
 
-// to constrain ability of trie
-type trieReader interface {
-	TryGet(key []byte) ([]byte, error)
-}
-
-// to constrain ability of trie
-type trieWriter interface {
-	TryUpdate(key, value []byte) error
-	TryDelete(key []byte) error
-}
-
 // New create an state object.
-func New(root thor.Bytes32, kv kv.GetPutter) (*State, error) {
-	trie, err := trie.NewSecure(root, kv, 0)
-	if err != nil {
-		return nil, err
-	}
-
+func New(triex *triex.Proxy, root thor.Bytes32) *State {
 	state := State{
 		root:  root,
-		kv:    kv,
-		trie:  trie,
+		trie:  triex.NewTrie(root, true),
 		cache: make(map[thor.Address]*cachedObject),
 	}
 	state.setError = func(err error) {
@@ -61,17 +43,13 @@ func New(root thor.Bytes32, kv kv.GetPutter) (*State, error) {
 	state.sm = stackedmap.New(func(key interface{}) (value interface{}, exist bool) {
 		return state.cacheGetter(key)
 	})
-	return &state, nil
+	return &state
 }
 
 // Spawn create a new state object shares current state's underlying db.
 // Also errors will be reported to current state.
 func (s *State) Spawn(root thor.Bytes32) *State {
-	newState, err := New(root, s.kv)
-	if err != nil {
-		s.setError(err)
-		newState, _ = New(thor.Bytes32{}, s.kv)
-	}
+	newState := New(s.triex, root)
 	newState.setError = s.setError
 	return newState
 }
@@ -141,9 +119,9 @@ func (s *State) getCachedObject(addr thor.Address) *cachedObject {
 	a, err := loadAccount(s.trie, addr)
 	if err != nil {
 		s.setError(err)
-		return newCachedObject(s.kv, emptyAccount())
+		return newCachedObject(s.triex, emptyAccount())
 	}
-	co := newCachedObject(s.kv, a)
+	co := newCachedObject(s.triex, a)
 	s.cache[addr] = co
 	return co
 }
@@ -332,7 +310,6 @@ func (s *State) SetCode(addr thor.Address, code []byte) {
 	if len(code) > 0 {
 		s.sm.Put(codeKey(addr), code)
 		codeHash = crypto.Keccak256(code)
-		codeCache.Add(string(codeHash), code)
 	} else {
 		s.sm.Put(codeKey(addr), []byte(nil))
 	}
@@ -366,22 +343,19 @@ func (s *State) RevertTo(revision int) {
 }
 
 // BuildStorageTrie build up storage trie for given address with cumulative changes.
-func (s *State) BuildStorageTrie(addr thor.Address) (*trie.SecureTrie, error) {
+func (s *State) BuildStorageTrie(addr thor.Address) (triex.Trie, error) {
 	acc := s.getAccount(addr)
 
-	root := thor.BytesToBytes32(acc.StorageRoot)
-
-	// retrieve a copied trie
-	trie, err := trie.NewSecure(root, s.kv, 0)
-	if err != nil {
-		return nil, err
-	}
+	trie := s.triex.NewTrie(thor.BytesToBytes32(acc.StorageRoot), true)
 	// traverse journal to filter out storage changes for addr
 	s.sm.Journal(func(k, v interface{}) bool {
 		switch key := k.(type) {
 		case storageKey:
 			if key.addr == addr {
-				saveStorage(trie, key.key, v.(rlp.RawValue))
+				if err := trie.Update(key.key[:], v.([]byte)); err != nil {
+					s.setError(err)
+					return false
+				}
 			}
 		}
 		// abort if error occurred
@@ -402,7 +376,7 @@ func (s *State) Stage() *Stage {
 	if s.err != nil {
 		return &Stage{err: s.err}
 	}
-	return newStage(s.root, s.kv, changes)
+	return newStage(s.triex, s.root, changes)
 }
 
 type (

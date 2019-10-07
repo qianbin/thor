@@ -22,36 +22,35 @@ import (
 	"github.com/vechain/thor/runtime"
 	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
+	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/tx"
 	"github.com/vechain/thor/xenv"
 )
 
 type Accounts struct {
 	chain        *chain.Chain
-	stateCreator *state.Creator
+	triex        *triex.Proxy
 	callGasLimit uint64
 	forkConfig   thor.ForkConfig
 }
 
 func New(
 	chain *chain.Chain,
-	stateCreator *state.Creator,
+	triex *triex.Proxy,
 	callGasLimit uint64,
 	forkConfig thor.ForkConfig,
 ) *Accounts {
 	return &Accounts{
 		chain,
-		stateCreator,
+		triex,
 		callGasLimit,
 		forkConfig,
 	}
 }
 
 func (a *Accounts) getCode(addr thor.Address, stateRoot thor.Bytes32) ([]byte, error) {
-	state, err := a.stateCreator.NewState(stateRoot)
-	if err != nil {
-		return nil, err
-	}
+	state := state.New(a.triex, stateRoot)
+
 	code := state.GetCode(addr)
 	if err := state.Err(); err != nil {
 		return nil, err
@@ -77,10 +76,8 @@ func (a *Accounts) handleGetCode(w http.ResponseWriter, req *http.Request) error
 }
 
 func (a *Accounts) getAccount(addr thor.Address, header *block.Header) (*Account, error) {
-	state, err := a.stateCreator.NewState(header.StateRoot())
-	if err != nil {
-		return nil, err
-	}
+	state := state.New(a.triex, header.StateRoot())
+
 	b := state.GetBalance(addr)
 	code := state.GetCode(addr)
 	energy := state.GetEnergy(addr, header.Timestamp())
@@ -95,10 +92,8 @@ func (a *Accounts) getAccount(addr thor.Address, header *block.Header) (*Account
 }
 
 func (a *Accounts) getStorage(addr thor.Address, key thor.Bytes32, stateRoot thor.Bytes32) (thor.Bytes32, error) {
-	state, err := a.stateCreator.NewState(stateRoot)
-	if err != nil {
-		return thor.Bytes32{}, err
-	}
+	state := state.New(a.triex, stateRoot)
+
 	storage := state.GetStorage(addr, key)
 	if err := state.Err(); err != nil {
 		return thor.Bytes32{}, err
@@ -199,10 +194,8 @@ func (a *Accounts) batchCall(ctx context.Context, batchCallData *BatchCallData, 
 	if err != nil {
 		return nil, err
 	}
-	state, err := a.stateCreator.NewState(header.StateRoot())
-	if err != nil {
-		return nil, err
-	}
+	state := state.New(a.triex, header.StateRoot())
+
 	signer, _ := header.Signer()
 	rt := runtime.New(a.chain.NewSeeker(header.ParentID()), state,
 		&xenv.BlockContext{

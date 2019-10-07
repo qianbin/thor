@@ -21,8 +21,8 @@ import (
 	"github.com/vechain/thor/genesis"
 	"github.com/vechain/thor/logdb"
 	"github.com/vechain/thor/packer"
-	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
+	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/tx"
 	"github.com/vechain/thor/txpool"
 )
@@ -43,7 +43,7 @@ type Solo struct {
 // New returns Solo instance
 func New(
 	chain *chain.Chain,
-	stateCreator *state.Creator,
+	triex *triex.Proxy,
 	logDB *logdb.LogDB,
 	txPool *txpool.TxPool,
 	gasLimit uint64,
@@ -55,7 +55,7 @@ func New(
 		txPool: txPool,
 		packer: packer.New(
 			chain,
-			stateCreator,
+			triex,
 			genesis.DevAccounts()[0].Address,
 			&genesis.DevAccounts()[0].Address,
 			forkConfig),

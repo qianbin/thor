@@ -20,6 +20,7 @@ import (
 	"github.com/vechain/thor/co"
 	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
+	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/tx"
 )
 
@@ -47,9 +48,9 @@ type TxEvent struct {
 
 // TxPool maintains unprocessed transactions.
 type TxPool struct {
-	options      Options
-	chain        *chain.Chain
-	stateCreator *state.Creator
+	options Options
+	chain   *chain.Chain
+	triex   *triex.Proxy
 
 	executables    atomic.Value
 	all            *txObjectMap
@@ -63,13 +64,13 @@ type TxPool struct {
 
 // New create a new TxPool instance.
 // Shutdown is required to be called at end.
-func New(chain *chain.Chain, stateCreator *state.Creator, options Options) *TxPool {
+func New(chain *chain.Chain, triex *triex.Proxy, options Options) *TxPool {
 	pool := &TxPool{
-		options:      options,
-		chain:        chain,
-		stateCreator: stateCreator,
-		all:          newTxObjectMap(),
-		done:         make(chan struct{}),
+		options: options,
+		chain:   chain,
+		triex:   triex,
+		all:     newTxObjectMap(),
+		done:    make(chan struct{}),
 	}
 	pool.goes.Go(pool.housekeeping)
 	return pool
@@ -168,10 +169,7 @@ func (p *TxPool) add(newTx *tx.Transaction, rejectNonexecutable bool) error {
 	}
 
 	if isChainSynced(uint64(time.Now().Unix()), headBlock.Timestamp()) {
-		state, err := p.stateCreator.NewState(headBlock.StateRoot())
-		if err != nil {
-			return err
-		}
+		state := state.New(p.triex, headBlock.StateRoot())
 
 		executable, err := txObj.Executable(p.chain, state, headBlock)
 		if err != nil {
@@ -276,10 +274,8 @@ func (p *TxPool) wash(headBlock *block.Header) (executables tx.Transactions, rem
 		}
 	}()
 
-	state, err := p.stateCreator.NewState(headBlock.StateRoot())
-	if err != nil {
-		return nil, 0, errors.WithMessage(err, "new state")
-	}
+	state := state.New(p.triex, headBlock.StateRoot())
+
 	var (
 		seeker            = p.chain.NewSeeker(headBlock.ID())
 		baseGasPrice      = builtin.Params.Native(state).Get(thor.KeyBaseGasPrice)

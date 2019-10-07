@@ -14,6 +14,7 @@ import (
 	"github.com/vechain/thor/runtime"
 	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
+	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/tx"
 	"github.com/vechain/thor/xenv"
 )
@@ -69,7 +70,8 @@ func (b *Builder) ComputeID() (thor.Bytes32, error) {
 	if err != nil {
 		return thor.Bytes32{}, err
 	}
-	blk, _, err := b.Build(state.NewCreator(kv))
+
+	blk, _, err := b.Build(triex.New(kv, 0))
 	if err != nil {
 		return thor.Bytes32{}, err
 	}
@@ -77,11 +79,8 @@ func (b *Builder) ComputeID() (thor.Bytes32, error) {
 }
 
 // Build build genesis block according to presets.
-func (b *Builder) Build(stateCreator *state.Creator) (blk *block.Block, events tx.Events, err error) {
-	state, err := stateCreator.NewState(thor.Bytes32{})
-	if err != nil {
-		return nil, nil, err
-	}
+func (b *Builder) Build(triex *triex.Proxy) (blk *block.Block, events tx.Events, err error) {
+	state := state.New(triex, thor.Bytes32{})
 
 	for _, proc := range b.stateProcs {
 		if err := proc(state); err != nil {
