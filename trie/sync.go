@@ -105,7 +105,7 @@ func (s *TrieSync) AddSubTrie(root thor.Bytes32, depth int, parent thor.Bytes32,
 	}
 	key := root.Bytes()
 	blob, _ := s.database.Get(key)
-	if local, err := decodeNode(key, blob, 0); local != nil && err == nil {
+	if local, err := decodeNode(key, blob); local != nil && err == nil {
 		return
 	}
 	// Assemble the new sub-trie sync request
@@ -191,7 +191,7 @@ func (s *TrieSync) Process(results []SyncResult) (bool, int, error) {
 			continue
 		}
 		// Decode the node data content and update the request
-		node, err := decodeNode(item.Hash[:], item.Data, 0)
+		node, err := decodeNode(item.Hash[:], item.Data)
 		if err != nil {
 			return committed, i, err
 		}

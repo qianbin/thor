@@ -23,7 +23,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/rcrowley/go-metrics"
 	"github.com/vechain/thor/thor"
 )
 
@@ -33,25 +32,6 @@ var (
 	// This is the known hash of an empty state trie entry.
 	emptyState = thor.Blake2b(nil)
 )
-
-var (
-	cacheMissCounter   = metrics.NewRegisteredCounter("trie/cachemiss", nil)
-	cacheUnloadCounter = metrics.NewRegisteredCounter("trie/cacheunload", nil)
-)
-
-// CacheMisses retrieves a global counter measuring the number of cache misses
-// the trie had since process startup. This isn't useful for anything apart from
-// trie debugging purposes.
-func CacheMisses() int64 {
-	return cacheMissCounter.Count()
-}
-
-// CacheUnloads retrieves a global counter measuring the number of cache unloads
-// the trie did since process startup. This isn't useful for anything apart from
-// trie debugging purposes.
-func CacheUnloads() int64 {
-	return cacheUnloadCounter.Count()
-}
 
 // Database must be implemented by backing stores for the trie.
 type Database interface {
@@ -79,26 +59,13 @@ type DatabaseWriter interface {
 //
 // Trie is not safe for concurrent use.
 type Trie struct {
-	root         node
-	db           Database
-	originalRoot thor.Bytes32
-
-	// Cache generation values.
-	// cachegen increases by one with each commit operation.
-	// new nodes are tagged with the current generation and unloaded
-	// when their generation is older than than cachegen-cachelimit.
-	cachegen, cachelimit uint16
-}
-
-// SetCacheLimit sets the number of 'cache generations' to keep.
-// A cache generation is created by a call to Commit.
-func (t *Trie) SetCacheLimit(l uint16) {
-	t.cachelimit = l
+	root node
+	db   Database
 }
 
 // newFlag returns the cache flag value for a newly created node.
 func (t *Trie) newFlag() nodeFlag {
-	return nodeFlag{dirty: true, gen: t.cachegen}
+	return nodeFlag{dirty: true}
 }
 
 // New creates a trie with an existing root node from db.
@@ -108,8 +75,7 @@ func (t *Trie) newFlag() nodeFlag {
 // New will panic if db is nil and returns a MissingNodeError if root does
 // not exist in the database. Accessing the trie loads nodes from db on demand.
 func New(root thor.Bytes32, db Database) (*Trie, error) {
-	db = cacheDatabase(db)
-	trie := &Trie{db: db, originalRoot: root}
+	trie := &Trie{db: db}
 	if (root != thor.Bytes32{}) && root != emptyRoot {
 		if db == nil {
 			panic("trie.New: cannot use existing root without a database")
@@ -166,14 +132,12 @@ func (t *Trie) tryGet(origNode node, key []byte, pos int) (value []byte, newnode
 		if err == nil && didResolve {
 			n = n.copy()
 			n.Val = newnode
-			n.flags.gen = t.cachegen
 		}
 		return value, n, didResolve, err
 	case *fullNode:
 		value, newnode, didResolve, err = t.tryGet(n.Children[key[pos]], key, pos+1)
 		if err == nil && didResolve {
 			n = n.copy()
-			n.flags.gen = t.cachegen
 			n.Children[key[pos]] = newnode
 		}
 		return value, n, didResolve, err
@@ -442,13 +406,12 @@ func (t *Trie) resolve(n node, prefix []byte) (node, error) {
 }
 
 func (t *Trie) resolveHash(n hashNode, prefix []byte) (node, error) {
-	cacheMissCounter.Inc(1)
 
 	enc, err := t.db.Get(n)
 	if err != nil || enc == nil {
 		return nil, &MissingNodeError{NodeHash: thor.BytesToBytes32(n), Path: prefix}
 	}
-	dec := mustDecodeNode(n, enc, t.cachegen)
+	dec := mustDecodeNode(n, enc)
 	return dec, nil
 }
 
@@ -484,14 +447,11 @@ func (t *Trie) Commit() (root thor.Bytes32, err error) {
 // the changes made to db are written back to the trie's attached
 // database before using the trie.
 func (t *Trie) CommitTo(db DatabaseWriter) (root thor.Bytes32, err error) {
-	db = cacheDatabaseWriter(db)
-
 	hash, cached, err := t.hashRoot(db)
 	if err != nil {
 		return (thor.Bytes32{}), err
 	}
 	t.root = cached
-	t.cachegen++
 	return thor.BytesToBytes32(hash.(hashNode)), nil
 }
 
@@ -499,7 +459,7 @@ func (t *Trie) hashRoot(db DatabaseWriter) (node, node, error) {
 	if t.root == nil {
 		return hashNode(emptyRoot.Bytes()), nil, nil
 	}
-	h := newHasher(t.cachegen, t.cachelimit)
+	h := newHasher()
 	defer returnHasherToPool(h)
 	return h.hash(t.root, db, true)
 }

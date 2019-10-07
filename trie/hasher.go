@@ -17,7 +17,6 @@
 package trie
 
 import (
-	"bytes"
 	"hash"
 	"sync"
 
@@ -27,21 +26,33 @@ import (
 )
 
 type hasher struct {
-	tmp                  *bytes.Buffer
-	sha                  hash.Hash
-	cachegen, cachelimit uint16
+	tmp sliceBuffer
+	sha hash.Hash
+}
+
+type sliceBuffer []byte
+
+func (b *sliceBuffer) Write(data []byte) (n int, err error) {
+	*b = append(*b, data...)
+	return len(data), nil
+}
+
+func (b *sliceBuffer) Reset() {
+	*b = (*b)[:0]
 }
 
 // hashers live in a global pool.
 var hasherPool = sync.Pool{
 	New: func() interface{} {
-		return &hasher{tmp: new(bytes.Buffer), sha: thor.NewBlake2b()}
+		return &hasher{
+			tmp: make(sliceBuffer, 0, 550), // cap is as large as a full fullNode.
+			sha: thor.NewBlake2b(),
+		}
 	},
 }
 
-func newHasher(cachegen, cachelimit uint16) *hasher {
+func newHasher() *hasher {
 	h := hasherPool.Get().(*hasher)
-	h.cachegen, h.cachelimit = cachegen, cachelimit
 	return h
 }
 
@@ -57,14 +68,13 @@ func (h *hasher) hash(n node, db DatabaseWriter, force bool) (node, node, error)
 		if db == nil {
 			return hash, n, nil
 		}
-		if n.canUnload(h.cachegen, h.cachelimit) {
-			// Unload the node from cache. All of its subnodes will have a lower or equal
-			// cache generation number.
-			cacheUnloadCounter.Inc(1)
-			return hash, hash, nil
-		}
 		if !dirty {
-			return hash, n, nil
+			switch n.(type) {
+			case *fullNode, *shortNode:
+				return hash, hash, nil
+			default:
+				return hash, n, nil
+			}
 		}
 	}
 	// Trie not processed yet or needs storage, walk the children
@@ -152,22 +162,22 @@ func (h *hasher) store(n node, db DatabaseWriter, force bool) (node, error) {
 	}
 	// Generate the RLP encoding of the node
 	h.tmp.Reset()
-	if err := rlp.Encode(h.tmp, n); err != nil {
+	if err := rlp.Encode(&h.tmp, n); err != nil {
 		panic("encode error: " + err.Error())
 	}
 
-	if h.tmp.Len() < 32 && !force {
+	if len(h.tmp) < 32 && !force {
 		return n, nil // Nodes smaller than 32 bytes are stored inside their parent
 	}
 	// Larger nodes are replaced by their hash and stored in the database.
 	hash, _ := n.cache()
 	if hash == nil {
 		h.sha.Reset()
-		h.sha.Write(h.tmp.Bytes())
+		h.sha.Write(h.tmp)
 		hash = hashNode(h.sha.Sum(nil))
 	}
 	if db != nil {
-		return hash, db.Put(hash, h.tmp.Bytes())
+		return hash, db.Put(hash, h.tmp)
 	}
 	return hash, nil
 }
