@@ -26,8 +26,8 @@ import (
 	"github.com/vechain/thor/cmd/thor/node"
 	"github.com/vechain/thor/cmd/thor/solo"
 	"github.com/vechain/thor/genesis"
+	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/logdb"
-	"github.com/vechain/thor/lvldb"
 	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/txpool"
@@ -132,17 +132,20 @@ func defaultAction(ctx *cli.Context) error {
 	gene, forkConfig := selectGenesis(ctx)
 	instanceDir := makeInstanceDir(ctx, gene)
 
-	mainDB := openMainDB(ctx, instanceDir)
-	defer func() { log.Info("closing main database..."); mainDB.Close() }()
+	chainDB := openChainDB(ctx, instanceDir)
+	defer func() { log.Info("closing chain database..."); chainDB.Close() }()
+
+	stateDB, trieCacheSizeMB := openStateDB(ctx, instanceDir)
+	defer func() { log.Info("closing state database..."); stateDB.Close() }()
 
 	skipLogs := ctx.Bool(skipLogsFlag.Name)
 
 	logDB := openLogDB(ctx, instanceDir)
 	defer func() { log.Info("closing log database..."); logDB.Close() }()
 
-	triex := triex.New(mainDB, 0)
+	triex := triex.New(stateDB, trieCacheSizeMB)
 
-	chain := initChain(gene, triex, mainDB, logDB)
+	chain := initChain(gene, chainDB, triex, logDB)
 	master := loadNodeMaster(ctx)
 
 	printStartupMessage1(gene, chain, master, instanceDir, forkConfig)
@@ -202,26 +205,33 @@ func soloAction(ctx *cli.Context) error {
 	// Solo forks from the start
 	forkConfig := thor.ForkConfig{}
 
-	var mainDB *lvldb.LevelDB
-	var logDB *logdb.LogDB
-	var instanceDir string
+	var (
+		chainDB         kv.GetPutCloser
+		stateDB         kv.GetPutCloser
+		trieCacheSizeMB int
+		logDB           *logdb.LogDB
+		instanceDir     string
+	)
 
 	if ctx.Bool("persist") {
 		instanceDir = makeInstanceDir(ctx, gene)
-		mainDB = openMainDB(ctx, instanceDir)
+		chainDB = openChainDB(ctx, instanceDir)
+		stateDB, trieCacheSizeMB = openStateDB(ctx, instanceDir)
 		logDB = openLogDB(ctx, instanceDir)
 	} else {
 		instanceDir = "Memory"
-		mainDB = openMemMainDB()
+		chainDB = openMemDB()
+		stateDB = openMemDB()
 		logDB = openMemLogDB()
 	}
 
-	defer func() { log.Info("closing main database..."); mainDB.Close() }()
+	defer func() { log.Info("closing chain database..."); chainDB.Close() }()
+	defer func() { log.Info("closing state database..."); stateDB.Close() }()
 	defer func() { log.Info("closing log database..."); logDB.Close() }()
 
-	triex := triex.New(mainDB, 0)
+	triex := triex.New(stateDB, trieCacheSizeMB)
 
-	chain := initChain(gene, triex, mainDB, logDB)
+	chain := initChain(gene, chainDB, triex, logDB)
 	if err := syncLogDB(exitSignal, chain, logDB, ctx.Bool(verifyLogsFlag.Name)); err != nil {
 		return err
 	}
