@@ -12,14 +12,16 @@ import (
 )
 
 const (
+	// arbitraryTable table to store arbitrary kvs.
+	arbitraryTable table = '\x00'
 	// preimageTable the table to store non-trie preimages.
-	preimageTable table = "\x00"
+	preimageTable table = '\x01'
 	// trieCommitTableIndexKey key to store index of table which tries are committed to.
 	trieCommitTableIndexKey = "trie-commit-table-index"
 )
 
 // trieTables tables to store tries.
-var trieTables = dualTable{"\x01", "\x02"}
+var trieTables = dualTable{'\x02', '\x03'}
 
 // Trie merkle patricia trie interface.
 type Trie interface {
@@ -36,12 +38,15 @@ type Proxy struct {
 	cache            *cache
 	preimageGetter   getFunc
 	preimagePutter   putFunc
+	arbitraryGetter  getFunc
+	arbitraryPutter  putFunc
 	commitTableIndex byte
 }
 
 // New create a trie proxy.
 func New(db trie.Database, cacheSizeMB int) *Proxy {
-	val, _ := db.Get([]byte(trieCommitTableIndexKey))
+	arbitraryGetter := arbitraryTable.ProxyGetter(db.Get)
+	val, _ := arbitraryGetter([]byte(trieCommitTableIndexKey))
 
 	commitTableIndex := byte(0)
 	if len(val) > 0 {
@@ -56,6 +61,8 @@ func New(db trie.Database, cacheSizeMB int) *Proxy {
 		cache,
 		cache.ProxyGetter(preimageTable.ProxyGetter(db.Get)),
 		cache.ProxyPutter(preimageTable.ProxyPutter(db.Put)),
+		arbitraryGetter,
+		arbitraryTable.ProxyPutter(db.Put),
 		commitTableIndex,
 	}
 }
@@ -90,6 +97,16 @@ func (p *Proxy) GetPreimage(key []byte) ([]byte, error) {
 // PutPreimage put(save) preimage by give key(hash).
 func (p *Proxy) PutPreimage(key, val []byte) error {
 	return p.preimagePutter(key, val)
+}
+
+// GetArbitrary get arbitrary value by key.
+func (p *Proxy) GetArbitrary(key []byte) ([]byte, error) {
+	return p.arbitraryGetter(key)
+}
+
+// PutArbitrary put arbitrary key value.
+func (p *Proxy) PutArbitrary(key, val []byte) error {
+	return p.arbitraryPutter(key, val)
 }
 
 func (p *Proxy) newTrie(root thor.Bytes32) *trie.Trie {

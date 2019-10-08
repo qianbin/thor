@@ -5,26 +5,36 @@
 
 package triex
 
-type table string
+import "sync"
+
+var keyBufPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 0, 33)
+	},
+}
+
+type table byte
 
 func (t table) ProxyGetter(get getFunc) getFunc {
-	var keyBuf []byte
 	return func(key []byte) ([]byte, error) {
-		return get(t.makeKey(&keyBuf, key))
+		keyBuf := keyBufPool.Get().([]byte)
+		val, err := get(t.makeKey(keyBuf, key))
+		keyBufPool.Put(keyBuf)
+		return val, err
 	}
 }
 
 func (t table) ProxyPutter(put putFunc) putFunc {
-	var keyBuf []byte
 	return func(key, val []byte) error {
-		return put(t.makeKey(&keyBuf, key), val)
+		keyBuf := keyBufPool.Get().([]byte)
+		err := put(t.makeKey(keyBuf, key), val)
+		keyBufPool.Put(keyBuf)
+		return err
 	}
 }
 
-func (t table) makeKey(buf *[]byte, key []byte) []byte {
-	*buf = (*buf)[:0]
-	*buf = append(append(*buf, []byte(t)...), key...)
-	return *buf
+func (t table) makeKey(buf []byte, key []byte) []byte {
+	return append(append(buf, byte(t)), key...)
 }
 
 type dualTable [2]table
