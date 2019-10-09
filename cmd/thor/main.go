@@ -146,6 +146,7 @@ func defaultAction(ctx *cli.Context) error {
 	triex := triex.New(stateDB, trieCacheSizeMB)
 
 	chain := initChain(gene, chainDB, triex, logDB)
+
 	master := loadNodeMaster(ctx)
 
 	printStartupMessage1(gene, chain, master, instanceDir, forkConfig)
@@ -375,7 +376,7 @@ func seekLogDBSyncPosition(chain *chain.Chain, logDB *logdb.LogDB) (uint32, erro
 		seekStart = best.Number() - 1
 	}
 
-	header, err := chain.GetTrunkBlockHeader(seekStart)
+	header, err := chain.NewTrunk().GetBlockHeader(seekStart)
 	if err != nil {
 		return 0, err
 	}
@@ -440,7 +441,7 @@ func syncLogDB(ctx context.Context, chain *chain.Chain, logDB *logdb.LogDB, veri
 		task.ForBlock(b.Header())
 		txs := b.Transactions()
 		if len(txs) > 0 {
-			receipts, err := chain.GetBlockReceipts(b.Header().ID())
+			receipts, err := chain.GetReceipts(b.Header().ID())
 			if err != nil {
 				return errors.Wrap(err, "get block receipts")
 			}

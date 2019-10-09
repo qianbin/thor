@@ -166,7 +166,7 @@ func (c *Consensus) verifyBlock(blk *block.Block, state *state.State) (*state.St
 		if reverted, ok := processedTxs[txID]; ok {
 			return true, reverted, nil
 		}
-		meta, err := c.chain.GetTransactionMeta(txID, header.ParentID())
+		meta, err := c.chain.NewBranch(header.ParentID()).GetTransactionMeta(txID)
 		if err != nil {
 			if c.chain.IsNotFound(err) {
 				return false, false, nil

@@ -40,7 +40,7 @@ func (b *Blocks) handleGetBlock(w http.ResponseWriter, req *http.Request) error 
 		}
 		return err
 	}
-	isTrunk, err := b.isTrunk(block.Header().ID(), block.Header().Number())
+	isTrunk, err := b.chain.NewTrunk().Exist(block.Header().ID())
 	if err != nil {
 		return err
 	}
@@ -77,19 +77,10 @@ func (b *Blocks) getBlock(revision interface{}) (*block.Block, error) {
 	case thor.Bytes32:
 		return b.chain.GetBlock(revision.(thor.Bytes32))
 	case uint32:
-		return b.chain.GetTrunkBlock(revision.(uint32))
+		return b.chain.NewTrunk().GetBlock(revision.(uint32))
 	default:
 		return b.chain.BestBlock(), nil
 	}
-}
-
-func (b *Blocks) isTrunk(blkID thor.Bytes32, blkNum uint32) (bool, error) {
-	best := b.chain.BestBlock()
-	ancestorID, err := b.chain.GetAncestorBlockID(best.Header().ID(), blkNum)
-	if err != nil {
-		return false, err
-	}
-	return ancestorID == blkID, nil
 }
 
 func (b *Blocks) Mount(root *mux.Router, pathPrefix string) {

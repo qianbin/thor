@@ -53,7 +53,7 @@ func verifyLogDB(ctx context.Context, endBlockNum uint32, chain *chain.Chain, lo
 			return err
 		}
 
-		receipts, err := chain.GetBlockReceipts(b.Header().ID())
+		receipts, err := chain.GetReceipts(b.Header().ID())
 		if err != nil {
 			return err
 		}

@@ -33,7 +33,7 @@ func (br *beatReader) Read() ([]interface{}, bool, error) {
 	var msgs []interface{}
 	for _, block := range blocks {
 		header := block.Header()
-		receipts, err := br.chain.GetBlockReceipts(header.ID())
+		receipts, err := br.chain.GetReceipts(header.ID())
 		if err != nil {
 			return nil, false, err
 		}

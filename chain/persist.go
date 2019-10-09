@@ -14,11 +14,7 @@ import (
 )
 
 var (
-	bestBlockKey        = []byte("best")
-	blockPrefix         = []byte("b") // (prefix, block id) -> block
-	txMetaPrefix        = []byte("t") // (prefix, tx id) -> tx location
-	blockReceiptsPrefix = []byte("r") // (prefix, block id) -> receipts
-	indexTrieRootPrefix = []byte("i") // (prefix, block id) -> trie root
+	emptyRoot = (tx.Transactions{}).RootHash()
 )
 
 // TxMeta contains information about a tx is settled.
@@ -47,67 +43,42 @@ func loadRLP(r kv.Getter, key []byte, val interface{}) error {
 	return rlp.DecodeBytes(data, val)
 }
 
-// loadBestBlockID returns the best block ID on trunk.
-func loadBestBlockID(r kv.Getter) (thor.Bytes32, error) {
-	data, err := r.Get(bestBlockKey)
-	if err != nil {
-		return thor.Bytes32{}, err
-	}
-	return thor.BytesToBytes32(data), nil
+type extHeader struct {
+	Header    *block.Header
+	IndexRoot thor.Bytes32
 }
 
-// saveBestBlockID save the best block ID on trunk.
-func saveBestBlockID(w kv.Putter, id thor.Bytes32) error {
-	return w.Put(bestBlockKey, id[:])
+func saveBlockHeader(w kv.Putter, header *extHeader) error {
+	return saveRLP(w, header.Header.ID().Bytes(), header)
 }
 
-// loadBlockRaw load rlp encoded block raw data.
-func loadBlockRaw(r kv.Getter, id thor.Bytes32) (block.Raw, error) {
-	return r.Get(append(blockPrefix, id[:]...))
-}
-
-// saveBlockRaw save rlp encoded block raw data.
-func saveBlockRaw(w kv.Putter, id thor.Bytes32, raw block.Raw) error {
-	return w.Put(append(blockPrefix, id[:]...), raw)
-}
-
-// saveBlockNumberIndexTrieRoot save the root of trie that contains number to id index.
-func saveBlockNumberIndexTrieRoot(w kv.Putter, id thor.Bytes32, root thor.Bytes32) error {
-	return w.Put(append(indexTrieRootPrefix, id[:]...), root[:])
-}
-
-// loadBlockNumberIndexTrieRoot load trie root.
-func loadBlockNumberIndexTrieRoot(r kv.Getter, id thor.Bytes32) (thor.Bytes32, error) {
-	root, err := r.Get(append(indexTrieRootPrefix, id[:]...))
-	if err != nil {
-		return thor.Bytes32{}, err
-	}
-	return thor.BytesToBytes32(root), nil
-}
-
-// saveTxMeta save locations of a tx.
-func saveTxMeta(w kv.Putter, txID thor.Bytes32, meta []TxMeta) error {
-	return saveRLP(w, append(txMetaPrefix, txID[:]...), meta)
-}
-
-// loadTxMeta load tx meta info by tx id.
-func loadTxMeta(r kv.Getter, txID thor.Bytes32) ([]TxMeta, error) {
-	var meta []TxMeta
-	if err := loadRLP(r, append(txMetaPrefix, txID[:]...), &meta); err != nil {
+func loadBlockHeader(r kv.Getter, id thor.Bytes32) (*extHeader, error) {
+	var header extHeader
+	if err := loadRLP(r, id[:], &header); err != nil {
 		return nil, err
 	}
-	return meta, nil
+	return &header, nil
 }
 
-// saveBlockReceipts save tx receipts of a block.
-func saveBlockReceipts(w kv.Putter, blockID thor.Bytes32, receipts tx.Receipts) error {
-	return saveRLP(w, append(blockReceiptsPrefix, blockID[:]...), receipts)
+func saveTransactions(w kv.Putter, txsRoot thor.Bytes32, txs tx.Transactions) error {
+	return saveRLP(w, txsRoot[:], txs)
 }
 
-// loadBlockReceipts load tx receipts of a block.
-func loadBlockReceipts(r kv.Getter, blockID thor.Bytes32) (tx.Receipts, error) {
+func loadTransactions(r kv.Getter, txsRoot thor.Bytes32) (tx.Transactions, error) {
+	var txs tx.Transactions
+	if err := loadRLP(r, txsRoot[:], &txs); err != nil {
+		return nil, err
+	}
+	return txs, nil
+}
+
+func saveReceipts(w kv.Putter, receiptsRoot thor.Bytes32, receipts tx.Receipts) error {
+	return saveRLP(w, receiptsRoot[:], receipts)
+}
+
+func loadReceipts(r kv.Getter, receiptsRoot thor.Bytes32) (tx.Receipts, error) {
 	var receipts tx.Receipts
-	if err := loadRLP(r, append(blockReceiptsPrefix, blockID[:]...), &receipts); err != nil {
+	if err := loadRLP(r, receiptsRoot[:], &receipts); err != nil {
 		return nil, err
 	}
 	return receipts, nil

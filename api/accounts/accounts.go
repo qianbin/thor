@@ -328,7 +328,7 @@ func (a *Accounts) handleRevision(revision string) (*block.Header, error) {
 	if n > math.MaxUint32 {
 		return nil, utils.BadRequest(errors.WithMessage(errors.New("block number out of max uint32"), "revision"))
 	}
-	h, err := a.chain.GetTrunkBlockHeader(uint32(n))
+	h, err := a.chain.NewTrunk().GetBlockHeader(uint32(n))
 	if err != nil {
 		if a.chain.IsNotFound(err) {
 			return nil, utils.BadRequest(errors.WithMessage(err, "revision"))

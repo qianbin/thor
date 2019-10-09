@@ -51,7 +51,11 @@ func newStage(trieProxy *triex.Proxy, root thor.Bytes32, changes map[thor.Addres
 						return &Stage{err: err}
 					}
 				}
-				dataCpy.StorageRoot = strie.Hash().Bytes()
+				root, err := strie.Hash()
+				if err != nil {
+					return &Stage{err: err}
+				}
+				dataCpy.StorageRoot = root.Bytes()
 			}
 		}
 
@@ -72,7 +76,7 @@ func (s *Stage) Hash() (thor.Bytes32, error) {
 	if s.err != nil {
 		return thor.Bytes32{}, s.err
 	}
-	return s.accountTrie.Hash(), nil
+	return s.accountTrie.Hash()
 }
 
 // Commit commits all changes into main accounts trie and storage tries.

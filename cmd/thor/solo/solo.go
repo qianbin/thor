@@ -164,9 +164,11 @@ func (s *Solo) packing(pendingTxs tx.Transactions) error {
 		return errors.WithMessage(err, "commit state")
 	}
 
-	// ignore fork when solo
-	_, err = s.chain.AddBlock(b, receipts)
+	err = s.chain.AddBlock(b, receipts)
 	if err != nil {
+		return errors.WithMessage(err, "commit block")
+	}
+	if err := s.chain.SetBestBlock(b.Header().ID()); err != nil {
 		return errors.WithMessage(err, "commit block")
 	}
 

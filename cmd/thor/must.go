@@ -222,7 +222,7 @@ func initChain(gene *genesis.Genesis, chainDB kv.GetPutter, triex *triex.Proxy, 
 		fatal("build genesis block: ", err)
 	}
 
-	chain, err := chain.New(chainDB, genesisBlock)
+	chain, err := chain.New(chainDB, triex, genesisBlock)
 	if err != nil {
 		fatal("initialize block chain:", err)
 	}

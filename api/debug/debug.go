@@ -173,7 +173,11 @@ func (d *Debug) debugStorage(ctx context.Context, contractAddress thor.Address, 
 }
 
 func storageRangeAt(triex *triex.Proxy, t triex.Trie, start []byte, maxResult int) (*StorageRangeResult, error) {
-	it := trie.NewIterator(t.NodeIterator(start))
+	nodeIt, err := t.NodeIterator(start)
+	if err != nil {
+		return nil, err
+	}
+	it := trie.NewIterator(nodeIt)
 	result := StorageRangeResult{Storage: StorageMap{}}
 	for i := 0; i < maxResult && it.Next(); i++ {
 		_, content, _, err := rlp.Split(it.Value)
@@ -192,6 +196,11 @@ func storageRangeAt(triex *triex.Proxy, t triex.Trie, start []byte, maxResult in
 		next := thor.BytesToBytes32(it.Key)
 		result.NextKey = &next
 	}
+
+	if it.Err != nil {
+		return nil, it.Err
+	}
+
 	return &result, nil
 }
 
@@ -236,7 +245,7 @@ func (d *Debug) parseTarget(target string) (blockID thor.Bytes32, txIndex uint64
 		if err != nil {
 			return thor.Bytes32{}, 0, 0, utils.BadRequest(errors.WithMessage(err, "target[1]"))
 		}
-		txMeta, err := d.chain.GetTransactionMeta(txID, blockID)
+		txMeta, err := d.chain.NewBranch(blockID).GetTransactionMeta(txID)
 		if err != nil {
 			if d.chain.IsNotFound(err) {
 				return thor.Bytes32{}, 0, 0, utils.Forbidden(errors.New("transaction not found"))

@@ -31,6 +31,7 @@ type State struct {
 // New create an state object.
 func New(triex *triex.Proxy, root thor.Bytes32) *State {
 	state := State{
+		triex: triex,
 		root:  root,
 		trie:  triex.NewTrie(root, true),
 		cache: make(map[thor.Address]*cachedObject),

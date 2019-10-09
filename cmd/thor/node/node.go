@@ -249,6 +249,11 @@ func (n *Node) processBlock(blk *block.Block, stats *blockStats) (bool, error) {
 		switch {
 		case consensus.IsKnownBlock(err):
 			stats.UpdateIgnored(1)
+			if blk.Header().BetterThan(n.chain.BestBlock().Header()) {
+				if err := n.chain.SetBestBlock(blk.Header().ID()); err != nil {
+					return true, err
+				}
+			}
 			return false, nil
 		case consensus.IsFutureBlock(err) || consensus.IsParentMissing(err):
 			stats.UpdateQueued(1)
@@ -268,56 +273,70 @@ func (n *Node) processBlock(blk *block.Block, stats *blockStats) (bool, error) {
 		return false, err
 	}
 
-	fork, err := n.commitBlock(blk, receipts)
+	prevTrunk, curTrunk, err := n.commitBlock(blk, receipts)
 	if err != nil {
-		if !n.chain.IsBlockExist(err) {
-			log.Error("failed to commit block", "err", err)
-		}
 		return false, err
 	}
 	commitElapsed := mclock.Now() - startTime - execElapsed
 	stats.UpdateProcessed(1, len(receipts), execElapsed, commitElapsed, blk.Header().GasUsed())
-	n.processFork(fork)
-	return len(fork.Trunk) > 0, nil
+	n.processFork(prevTrunk, curTrunk)
+	return prevTrunk.HeadID() != curTrunk.HeadID(), nil
 }
 
-func (n *Node) commitBlock(newBlock *block.Block, receipts tx.Receipts) (*chain.Fork, error) {
+// returns previous trunk and current trunk
+func (n *Node) commitBlock(newBlock *block.Block, receipts tx.Receipts) (*chain.Branch, *chain.Branch, error) {
 	n.commitLock.Lock()
 	defer n.commitLock.Unlock()
 
-	fork, err := n.chain.AddBlock(newBlock, receipts)
+	prevBestBlock := n.chain.BestBlock()
+	err := n.chain.AddBlock(newBlock, receipts)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+
+	if newBlock.Header().BetterThan(prevBestBlock.Header()) {
+		if err := n.chain.SetBestBlock(newBlock.Header().ID()); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	prevTrunk := n.chain.NewBranch(prevBestBlock.Header().ID())
+	curTrunk := n.chain.NewTrunk()
+
+	diff, err := curTrunk.Diff(prevTrunk)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	if !n.skipLogs {
 		if n.logDBFailed {
 			log.Warn("!!!log db skipped due to write failure (restart required to recover)")
 		} else {
-			if err := n.writeLogs(fork.Trunk); err != nil {
+			if err := n.writeLogs(diff); err != nil {
 				n.logDBFailed = true
-				return nil, errors.Wrap(err, "write logs")
+				return nil, nil, errors.Wrap(err, "write logs")
 			}
 		}
 	}
-	return fork, nil
+	return prevTrunk, curTrunk, nil
 }
 
-func (n *Node) writeLogs(trunk []*block.Header) error {
+func (n *Node) writeLogs(diff []thor.Bytes32) error {
 	// write full trunk blocks to prevent logs dropped
 	// in rare condition of long fork
 	task := n.logDB.NewTask()
-	for _, header := range trunk {
-		body, err := n.chain.GetBlockBody(header.ID())
+	for _, id := range diff {
+		b, err := n.chain.GetBlock(id)
 		if err != nil {
 			return err
 		}
-		receipts, err := n.chain.GetBlockReceipts(header.ID())
+		receipts, err := n.chain.GetReceipts(id)
 		if err != nil {
 			return err
 		}
 
-		task.ForBlock(header)
-		for i, tx := range body.Txs {
+		task.ForBlock(b.Header())
+		for i, tx := range b.Transactions() {
 			origin, _ := tx.Origin()
 			task.Write(tx.ID(), origin, receipts[i].Outputs)
 		}
@@ -325,25 +344,30 @@ func (n *Node) writeLogs(trunk []*block.Header) error {
 	return task.Commit()
 }
 
-func (n *Node) processFork(fork *chain.Fork) {
-	if len(fork.Branch) >= 2 {
-		trunkLen := len(fork.Trunk)
-		branchLen := len(fork.Branch)
+func (n *Node) processFork(prevTrunk, curTrunk *chain.Branch) {
+	sideIds, err := prevTrunk.Diff(curTrunk)
+	if err != nil {
+		log.Warn("failed to process fork", "err", err)
+		return
+	}
+	if len(sideIds) == 0 {
+		return
+	}
+
+	if n := len(sideIds); n >= 2 {
 		log.Warn(fmt.Sprintf(
 			`⑂⑂⑂⑂⑂⑂⑂⑂ FORK HAPPENED ⑂⑂⑂⑂⑂⑂⑂⑂
-ancestor: %v
-trunk:    %v  %v
-branch:   %v  %v`, fork.Ancestor,
-			trunkLen, fork.Trunk[trunkLen-1],
-			branchLen, fork.Branch[branchLen-1]))
+side-chain:   %v  %v`,
+			n, sideIds[n-1]))
 	}
-	for _, header := range fork.Branch {
-		body, err := n.chain.GetBlockBody(header.ID())
+
+	for _, id := range sideIds {
+		b, err := n.chain.GetBlock(id)
 		if err != nil {
-			log.Warn("failed to get block body", "err", err, "blockid", header.ID())
-			continue
+			log.Warn("failed to process fork", "err", err)
+			return
 		}
-		for _, tx := range body.Txs {
+		for _, tx := range b.Transactions() {
 			if err := n.txPool.Add(tx); err != nil {
 				log.Debug("failed to add tx to tx pool", "err", err, "id", tx.ID())
 			}

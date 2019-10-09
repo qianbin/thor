@@ -31,7 +31,7 @@ func (er *eventReader) Read() ([]interface{}, bool, error) {
 	}
 	var msgs []interface{}
 	for _, block := range blocks {
-		receipts, err := er.chain.GetBlockReceipts(block.Header().ID())
+		receipts, err := er.chain.GetReceipts(block.Header().ID())
 		if err != nil {
 			return nil, false, err
 		}

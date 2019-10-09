@@ -27,6 +27,7 @@ type Flow struct {
 	txs          tx.Transactions
 	receipts     tx.Receipts
 	features     tx.Features
+	findTx       func(txid thor.Bytes32) (found bool, reverted bool, err error)
 }
 
 func newFlow(
@@ -35,12 +36,27 @@ func newFlow(
 	runtime *runtime.Runtime,
 	features tx.Features,
 ) *Flow {
+	branch := packer.chain.NewBranch(parentHeader.ID())
+	processedTxs := make(map[thor.Bytes32]bool)
 	return &Flow{
 		packer:       packer,
 		parentHeader: parentHeader,
 		runtime:      runtime,
-		processedTxs: make(map[thor.Bytes32]bool),
+		processedTxs: processedTxs,
 		features:     features,
+		findTx: func(txID thor.Bytes32) (found bool, reverted bool, err error) {
+			if reverted, ok := processedTxs[txID]; ok {
+				return true, reverted, nil
+			}
+			txMeta, err := branch.GetTransactionMeta(txID)
+			if err != nil {
+				if packer.chain.IsNotFound(err) {
+					return false, false, nil
+				}
+				return false, false, err
+			}
+			return true, txMeta.Reverted, nil
+		},
 	}
 }
 
@@ -52,20 +68,6 @@ func (f *Flow) ParentHeader() *block.Header {
 // When the target time to do packing.
 func (f *Flow) When() uint64 {
 	return f.runtime.Context().Time
-}
-
-func (f *Flow) findTx(txID thor.Bytes32) (found bool, reverted bool, err error) {
-	if reverted, ok := f.processedTxs[txID]; ok {
-		return true, reverted, nil
-	}
-	txMeta, err := f.packer.chain.GetTransactionMeta(txID, f.parentHeader.ID())
-	if err != nil {
-		if f.packer.chain.IsNotFound(err) {
-			return false, false, nil
-		}
-		return false, false, err
-	}
-	return true, txMeta.Reverted, nil
 }
 
 // Adopt try to execute the given transaction.
