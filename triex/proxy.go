@@ -27,9 +27,9 @@ var trieTables = dualTable{'\x02', '\x03'}
 type Trie interface {
 	Get(key []byte) ([]byte, error)
 	Update(key, val []byte) error
-	Hash() thor.Bytes32
+	Hash() (thor.Bytes32, error)
 	Commit() (thor.Bytes32, error)
-	NodeIterator(start []byte) trie.NodeIterator
+	NodeIterator(start []byte) (trie.NodeIterator, error)
 }
 
 // Proxy to help create tries, which are enhanced by caching, pruning, etc.
@@ -69,24 +69,37 @@ func New(db trie.Database, cacheSizeMB int) *Proxy {
 
 // NewTrie create a proxied trie.
 func (p *Proxy) NewTrie(root thor.Bytes32, secure bool) Trie {
+	var rawTrie *trie.Trie
+	nonSecureTrie := &nonSecureTrie{
+		func() (*trie.Trie, error) {
+			if rawTrie == nil {
+				var err error
+				rawTrie, err = p.newTrie(root)
+				if err != nil {
+					return nil, err
+				}
+			}
+			return rawTrie, nil
+		}}
+
 	if secure {
 		var (
-			hasher = thor.NewBlake2b()
+			hasher    = thor.NewBlake2b()
+			keyHasher = func(key []byte) (h thor.Bytes32) {
+				hasher.Reset()
+				hasher.Write(key)
+				hasher.Sum(h[:0])
+				return
+			}
 		)
-		keyHasher := func(key []byte) (h thor.Bytes32) {
-			hasher.Reset()
-			hasher.Write(key)
-			hasher.Sum(h[:0])
-			return
-		}
 		return &secureTrie{
-			p.newTrie(root),
+			nonSecureTrie,
 			keyHasher,
-			make(map[thor.Bytes32][]byte),
+			nil,
 			p.preimagePutter,
 		}
 	}
-	return &nonSecureTrie{p.newTrie(root)}
+	return nonSecureTrie
 }
 
 // GetPreimage get preimage by given key(hash).
@@ -109,10 +122,10 @@ func (p *Proxy) PutArbitrary(key, val []byte) error {
 	return p.arbitraryPutter(key, val)
 }
 
-func (p *Proxy) newTrie(root thor.Bytes32) *trie.Trie {
+func (p *Proxy) newTrie(root thor.Bytes32) (*trie.Trie, error) {
 	commitTable := trieTables[p.commitTableIndex%2]
 	// here skip error check is safe
-	tr, _ := trie.New(root, struct {
+	return trie.New(root, struct {
 		getFunc
 		hasFunc
 		putFunc
@@ -121,35 +134,72 @@ func (p *Proxy) newTrie(root thor.Bytes32) *trie.Trie {
 		nil,
 		p.cache.ProxyPutter(commitTable.ProxyPutter(p.db.Put)),
 	})
-	return tr
 }
 
 type nonSecureTrie struct {
-	*trie.Trie
+	getTrie func() (*trie.Trie, error)
 }
 
 func (n *nonSecureTrie) Get(key []byte) ([]byte, error) {
-	return n.Trie.TryGet(key)
+	trie, err := n.getTrie()
+	if err != nil {
+		return nil, err
+	}
+	return trie.TryGet(key)
 }
 func (n *nonSecureTrie) Update(key, val []byte) error {
-	return n.Trie.TryUpdate(key, val)
+	trie, err := n.getTrie()
+	if err != nil {
+		return err
+	}
+	return trie.TryUpdate(key, val)
+}
+
+func (n *nonSecureTrie) Hash() (thor.Bytes32, error) {
+	trie, err := n.getTrie()
+	if err != nil {
+		return thor.Bytes32{}, err
+	}
+	return trie.Hash(), nil
+}
+
+func (n *nonSecureTrie) Commit() (thor.Bytes32, error) {
+	trie, err := n.getTrie()
+	if err != nil {
+		return thor.Bytes32{}, err
+	}
+	return trie.Commit()
+}
+
+func (n *nonSecureTrie) NodeIterator(start []byte) (trie.NodeIterator, error) {
+	trie, err := n.getTrie()
+	if err != nil {
+		return nil, err
+	}
+	return trie.NodeIterator(start), nil
 }
 
 type secureTrie struct {
-	*trie.Trie
+	*nonSecureTrie
 	hasher         func([]byte) thor.Bytes32
 	preimages      map[thor.Bytes32][]byte
 	preimagePutter putFunc
 }
 
 func (s *secureTrie) Get(key []byte) ([]byte, error) {
-	return s.Trie.TryGet(s.hasher(key).Bytes())
+	return s.nonSecureTrie.Get(s.hasher(key).Bytes())
 }
 
 func (s *secureTrie) Update(key, val []byte) error {
 	hk := s.hasher(key)
-	s.preimages[hk] = append([]byte(nil), val...)
-	return s.Trie.TryUpdate(hk[:], val)
+	if err := s.nonSecureTrie.Update(hk[:], val); err != nil {
+		return err
+	}
+	if s.preimages == nil {
+		s.preimages = make(map[thor.Bytes32][]byte)
+	}
+	s.preimages[hk] = val
+	return nil
 }
 
 func (s *secureTrie) Commit() (thor.Bytes32, error) {
@@ -158,5 +208,6 @@ func (s *secureTrie) Commit() (thor.Bytes32, error) {
 			return thor.Bytes32{}, err
 		}
 	}
-	return s.Trie.Commit()
+	s.preimages = nil
+	return s.nonSecureTrie.Commit()
 }
