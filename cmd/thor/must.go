@@ -37,6 +37,7 @@ import (
 	"github.com/vechain/thor/logdb"
 	"github.com/vechain/thor/lvldb"
 	"github.com/vechain/thor/p2psrv"
+	"github.com/vechain/thor/pebbledb"
 	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/tx"
@@ -131,12 +132,13 @@ func makeInstanceDir(ctx *cli.Context, gene *genesis.Genesis) string {
 
 func openChainDB(ctx *cli.Context, dataDir string) kv.GetPutCloser {
 	dir := filepath.Join(dataDir, "chain.db")
-	chainDB, err := lvldb.New(
-		dir,
-		lvldb.Options{
-			CacheSize:              256,
-			OpenFilesCacheCapacity: 64,
-		})
+	chainDB, err := pebbledb.New(dir)
+	// chainDB, err := lvldb.New(
+	// 	dir,
+	// 	lvldb.Options{
+	// 		CacheSize:              256,
+	// 		OpenFilesCacheCapacity: 64,
+	// 	})
 	if err != nil {
 		fatal(fmt.Sprintf("open chain database [%v]: %v", dir, err))
 	}
@@ -158,10 +160,11 @@ func openStateDB(ctx *cli.Context, dataDir string) (kv.GetPutCloser, int) {
 	log.Debug("fd cache", "n", fdCache)
 
 	dir := filepath.Join(dataDir, "state.db")
-	stateDB, err := lvldb.New(dir, lvldb.Options{
-		CacheSize:              cacheMB / 2,
-		OpenFilesCacheCapacity: fdCache,
-	})
+	stateDB, err := pebbledb.New(dir)
+	// lvldb.New(dir, lvldb.Options{
+	// 	CacheSize:              cacheMB / 2,
+	// 	OpenFilesCacheCapacity: fdCache,
+	// })
 	if err != nil {
 		fatal(fmt.Sprintf("open state database [%v]: %v", dir, err))
 	}
