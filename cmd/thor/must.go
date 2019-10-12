@@ -133,7 +133,10 @@ func openChainDB(ctx *cli.Context, dataDir string) kv.GetPutCloser {
 	dir := filepath.Join(dataDir, "chain.db")
 	chainDB, err := lvldb.New(
 		dir,
-		lvldb.Options{})
+		lvldb.Options{
+			CacheSize:              256,
+			OpenFilesCacheCapacity: 64,
+		})
 	if err != nil {
 		fatal(fmt.Sprintf("open chain database [%v]: %v", dir, err))
 	}

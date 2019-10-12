@@ -43,11 +43,11 @@ func New(path string, opts Options) (*LevelDB, error) {
 	}
 
 	db, err := leveldb.OpenFile(path, &opt.Options{
-		CompactionTableSizeMultiplier: 2,
-		OpenFilesCacheCapacity:        opts.OpenFilesCacheCapacity,
-		BlockCacheCapacity:            opts.CacheSize / 2 * opt.MiB,
-		WriteBuffer:                   opts.CacheSize / 4 * opt.MiB, // Two of these are used internally
-		Filter:                        filter.NewBloomFilter(10),
+		// CompactionTableSizeMultiplier: 2,
+		OpenFilesCacheCapacity: opts.OpenFilesCacheCapacity,
+		BlockCacheCapacity:     opts.CacheSize / 2 * opt.MiB,
+		WriteBuffer:            opts.CacheSize / 4 * opt.MiB, // Two of these are used internally
+		Filter:                 filter.NewBloomFilter(10),
 		// DisableSeeksCompaction: true,
 	})
 
@@ -116,6 +116,20 @@ func (ldb *LevelDB) NewIterator(r kv.Range) kv.Iterator {
 		Start: r.From,
 		Limit: r.To,
 	}, &readOpt)
+}
+
+func (ldb *LevelDB) DDelete(f func(d func(k []byte) error) error) error {
+	tx, err := ldb.db.OpenTransaction()
+	if err != nil {
+		return err
+	}
+	if err := f(func(k []byte) error {
+		return tx.Delete(k, &writeOpt)
+	}); err != nil {
+		tx.Discard()
+		return err
+	}
+	return tx.Commit()
 }
 
 //////
