@@ -16,6 +16,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/keystore"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/inconshreveable/log15"
 	isatty "github.com/mattn/go-isatty"
 	"github.com/pborman/uuid"
@@ -28,6 +29,7 @@ import (
 	"github.com/vechain/thor/genesis"
 	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/logdb"
+	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/txpool"
@@ -123,6 +125,177 @@ func main() {
 	}
 }
 
+func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
+	go func() {
+		bb := thor.NewBigBloom(256, 3)
+
+		for {
+			for {
+				if chain.BestBlock().Header().Number() > 100000 {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+
+			fmt.Println("roll trie table")
+			_, pruneTable, err := triex.RollTrieTable()
+			if err != nil {
+
+				fmt.Println(err)
+				return
+			}
+
+			n := chain.BestBlock().Header().Number()
+			for {
+				if chain.BestBlock().Header().Number() > n+200 {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+
+			fmt.Println("snapshot")
+
+			b, err := chain.NewTrunk().GetBlock(n + 100)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+
+			bb.Reset()
+
+			snapshotEntries := 0
+
+			trie := triex.NewTrie(b.Header().StateRoot(), false)
+
+			accIt, err := trie.NodeIterator(nil)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			for accIt.Next(true) {
+				if hash := accIt.Hash(); !hash.IsZero() {
+					snapshotEntries++
+					bb.Add(hash)
+				}
+
+				if accIt.Leaf() {
+					if accIt.Leaf() {
+						blob := accIt.LeafBlob()
+						var acc state.Account
+						if err := rlp.DecodeBytes(blob, &acc); err != nil {
+							fmt.Println(err)
+							return
+						}
+						if len(acc.StorageRoot) > 0 {
+							str := triex.NewTrie(thor.BytesToBytes32(acc.StorageRoot), false)
+							sit, err := str.NodeIterator(nil)
+							if err != nil {
+								fmt.Println(err)
+								return
+							}
+							for sit.Next(true) {
+								if h := sit.Hash(); !h.IsZero() {
+									snapshotEntries++
+									bb.Add(h)
+								}
+							}
+						}
+					}
+				}
+			}
+
+			_, iroot, err := chain.GetBlockHeader(b.Header().ID())
+			if err != nil {
+				return
+			}
+
+			itr := triex.NewTrie(iroot, false)
+			iIt, err := itr.NodeIterator(nil)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+
+			for iIt.Next(true) {
+				if h := iIt.Hash(); !h.IsZero() {
+					snapshotEntries++
+					bb.Add(h)
+				}
+			}
+
+			fmt.Println("done snapshot,", snapshotEntries, "entries")
+
+			for {
+				if chain.BestBlock().Header().Number() > n+70000 {
+					break
+
+				}
+				time.Sleep(time.Second)
+			}
+
+			fmt.Println("start pruning")
+			fmt.Println("pruning table ", pruneTable)
+
+			scanedEntries := 0
+			deletedEntries := 0
+			rng := *kv.NewRangeWithBytesPrefix([]byte{pruneTable})
+
+			for {
+				batch := rawDB.NewBatch()
+				ittt := rawDB.NewIterator(rng)
+				nomore := false
+				// var start, end []byte
+				for i := 0; i < 8192; i++ {
+					if ittt.Next() {
+						// if i == 0 {
+						// 	start = append([]byte(nil), ittt.Key()...)
+						// } else {
+						// 	end = append([]byte(nil), ittt.Key()...)
+						// }
+						k := append([]byte(nil), ittt.Key()...)
+						rng.From = k
+
+						scanedEntries++
+
+						if !bb.Test(thor.BytesToBytes32(k[1:])) {
+							batch.Delete(k)
+							deletedEntries++
+						}
+					} else {
+						nomore = true
+						break
+					}
+				}
+				ittt.Release()
+
+				if batch.Len() > 0 {
+					if err := batch.Write(); err != nil {
+						fmt.Println(err)
+					}
+				}
+				// if len(start) > 0 && len(end) > 0 {
+				// 	_kv.(kv.Compactable).Compact(kv.Range{
+				// 		From: start,
+				// 		To:   end,
+				// 	})
+				// }
+				if nomore {
+					break
+				}
+			}
+			fmt.Println("done pruning, ", "deleted", deletedEntries, "/", scanedEntries, "entries")
+
+			// if bestN > c.Snap.Num+100000 {
+			// 	trie.SetDatabaseHook(&DBHook{})
+			// 	c.Snap.Num
+			// }
+
+		}
+
+	}()
+	return nil
+}
+
 func defaultAction(ctx *cli.Context) error {
 	exitSignal := handleExitSignal()
 
@@ -138,6 +311,22 @@ func defaultAction(ctx *cli.Context) error {
 	stateDB, trieCacheSizeMB := openStateDB(ctx, instanceDir)
 	defer func() { log.Info("closing state database..."); stateDB.Close() }()
 
+	// f := func(p byte) {
+	// 	n := 0
+	// 	size := 0
+	// 	it := stateDB.NewIterator(*kv.NewRangeWithBytesPrefix([]byte{p}))
+	// 	for it.Next() {
+	// 		n++
+	// 		size += len(it.Value())
+	// 	}
+	// 	it.Release()
+	// 	fmt.Println(n, size)
+	// }
+	// f(0)
+	// f(1)
+	// f(2)
+	// f(3)
+
 	skipLogs := ctx.Bool(skipLogsFlag.Name)
 
 	logDB := openLogDB(ctx, instanceDir)
@@ -146,6 +335,8 @@ func defaultAction(ctx *cli.Context) error {
 	triex := triex.New(stateDB, trieCacheSizeMB)
 
 	chain := initChain(gene, chainDB, triex, logDB)
+
+	prune(triex, stateDB, chain)
 
 	master := loadNodeMaster(ctx)
 
@@ -390,7 +581,7 @@ func seekLogDBSyncPosition(chain *chain.Chain, logDB *logdb.LogDB) (uint32, erro
 			break
 		}
 
-		header, err = chain.GetBlockHeader(header.ParentID())
+		header, _, err = chain.GetBlockHeader(header.ParentID())
 		if err != nil {
 			return 0, err
 		}

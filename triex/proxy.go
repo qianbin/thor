@@ -18,10 +18,10 @@ const (
 	preimageTable table = '\x01'
 	// trieCommitTableIndexKey key to store index of table which tries are committed to.
 	trieCommitTableIndexKey = "trie-commit-table-index"
-)
 
-// trieTables tables to store tries.
-var trieTables = dualTable{'\x02', '\x03'}
+	trieTableA table = '\x02'
+	trieTableB table = '\x03'
+)
 
 // Trie merkle patricia trie interface.
 type Trie interface {
@@ -69,19 +69,7 @@ func New(db trie.Database, cacheSizeMB int) *Proxy {
 
 // NewTrie create a proxied trie.
 func (p *Proxy) NewTrie(root thor.Bytes32, secure bool) Trie {
-	var rawTrie *trie.Trie
-	nonSecureTrie := &nonSecureTrie{
-		func() (*trie.Trie, error) {
-			if rawTrie == nil {
-				var err error
-				rawTrie, err = p.newTrie(root)
-				if err != nil {
-					return nil, err
-				}
-			}
-			return rawTrie, nil
-		}}
-
+	nonSecureTrie := p.newTrie(root)
 	if secure {
 		var (
 			hasher    = thor.NewBlake2b()
@@ -122,18 +110,52 @@ func (p *Proxy) PutArbitrary(key, val []byte) error {
 	return p.arbitraryPutter(key, val)
 }
 
-func (p *Proxy) newTrie(root thor.Bytes32) (*trie.Trie, error) {
-	commitTable := trieTables[p.commitTableIndex%2]
-	// here skip error check is safe
-	return trie.New(root, struct {
-		getFunc
-		hasFunc
-		putFunc
-	}{
-		p.cache.ProxyGetter(trieTables.ProxyGetter(p.db.Get)),
-		nil,
-		p.cache.ProxyPutter(commitTable.ProxyPutter(p.db.Put)),
-	})
+func (p *Proxy) RollTrieTable() (byte, byte, error) {
+	index := p.commitTableIndex + 1
+	if err := p.PutArbitrary([]byte(trieCommitTableIndexKey), []byte{index}); err != nil {
+		return 0, 0, err
+	}
+	p.commitTableIndex = index
+	t1, t2 := p.trieTables()
+	return byte(t1), byte(t2), nil
+}
+
+func (p *Proxy) trieTables() (table, table) {
+	if p.commitTableIndex%2 == 0 {
+		return trieTableA, trieTableB
+	}
+	return trieTableB, trieTableA
+}
+
+func (p *Proxy) newTrie(root thor.Bytes32) *nonSecureTrie {
+	t1, t2 := p.trieTables()
+
+	dual := dualTable{t1, t2}
+
+	getter := p.cache.ProxyGetter(dual.ProxyGetter(p.db.Get))
+	putter := p.cache.ProxyPutter(dual[0].ProxyPutter(p.db.Put))
+
+	var rawTrie *trie.Trie
+	nonSecureTrie := &nonSecureTrie{
+		func() (*trie.Trie, error) {
+			if rawTrie == nil {
+				var err error
+				rawTrie, err = trie.New(root, struct {
+					getFunc
+					hasFunc
+					putFunc
+				}{
+					getter,
+					nil,
+					putter,
+				})
+				if err != nil {
+					return nil, err
+				}
+			}
+			return rawTrie, nil
+		}}
+	return nonSecureTrie
 }
 
 type nonSecureTrie struct {
@@ -203,11 +225,11 @@ func (s *secureTrie) Update(key, val []byte) error {
 }
 
 func (s *secureTrie) Commit() (thor.Bytes32, error) {
-	for k, v := range s.preimages {
-		if err := s.preimagePutter(k[:], v); err != nil {
-			return thor.Bytes32{}, err
-		}
-	}
+	// for k, v := range s.preimages {
+	// 	if err := s.preimagePutter(k[:], v); err != nil {
+	// 		return thor.Bytes32{}, err
+	// 	}
+	// }
 	s.preimages = nil
 	return s.nonSecureTrie.Commit()
 }

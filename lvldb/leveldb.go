@@ -46,9 +46,9 @@ func New(path string, opts Options) (*LevelDB, error) {
 		CompactionTableSizeMultiplier: 2,
 		OpenFilesCacheCapacity:        opts.OpenFilesCacheCapacity,
 		BlockCacheCapacity:            opts.CacheSize / 2 * opt.MiB,
-		WriteBuffer:                   32 * opt.MiB, // Two of these are used internally
+		WriteBuffer:                   opts.CacheSize / 4 * opt.MiB, // Two of these are used internally
 		Filter:                        filter.NewBloomFilter(10),
-		DisableSeeksCompaction:        true,
+		// DisableSeeksCompaction: true,
 	})
 
 	if _, corrupted := err.(*dberrors.ErrCorrupted); corrupted {

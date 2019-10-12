@@ -46,7 +46,7 @@ func (s *Seeker) GetID(num uint32) thor.Bytes32 {
 
 // GetHeader returns block header by the given number.
 func (s *Seeker) GetHeader(id thor.Bytes32) *block.Header {
-	header, err := s.chain.GetBlockHeader(id)
+	header, _, err := s.chain.GetBlockHeader(id)
 	if err != nil {
 		s.setError(err)
 		return &block.Header{}

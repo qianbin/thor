@@ -312,7 +312,7 @@ func (a *Accounts) handleRevision(revision string) (*block.Header, error) {
 		if err != nil {
 			return nil, utils.BadRequest(errors.WithMessage(err, "revision"))
 		}
-		h, err := a.chain.GetBlockHeader(blockID)
+		h, _, err := a.chain.GetBlockHeader(blockID)
 		if err != nil {
 			if a.chain.IsNotFound(err) {
 				return nil, utils.BadRequest(errors.WithMessage(err, "revision"))

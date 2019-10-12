@@ -28,7 +28,7 @@ func newBranch(chain *Chain, headID thor.Bytes32) *Branch {
 		headID,
 		func() (triex.Trie, error) {
 			if indexTrie == nil {
-				_, indexRoot, err := chain.getBlockHeader(headID)
+				_, indexRoot, err := chain.GetBlockHeader(headID)
 				if err != nil {
 					return nil, err
 				}
@@ -90,7 +90,8 @@ func (b *Branch) GetBlockHeader(num uint32) (*block.Header, error) {
 	if err != nil {
 		return nil, err
 	}
-	return b.chain.GetBlockHeader(id)
+	h, _, err := b.chain.GetBlockHeader(id)
+	return h, err
 }
 
 func (b *Branch) GetBlock(num uint32) (*block.Block, error) {

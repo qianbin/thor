@@ -39,7 +39,7 @@ func (t *Transactions) getRawTransaction(txID thor.Bytes32, blockID thor.Bytes32
 		return nil, err
 	}
 
-	header, err := t.chain.GetBlockHeader(txMeta.BlockID)
+	header, _, err := t.chain.GetBlockHeader(txMeta.BlockID)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +66,7 @@ func (t *Transactions) getTransactionByID(txID thor.Bytes32, blockID thor.Bytes3
 		return nil, err
 	}
 
-	header, err := t.chain.GetBlockHeader(txMeta.BlockID)
+	header, _, err := t.chain.GetBlockHeader(txMeta.BlockID)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +89,7 @@ func (t *Transactions) getTransactionReceiptByID(txID thor.Bytes32, blockID thor
 		return nil, err
 	}
 
-	header, err := t.chain.GetBlockHeader(txMeta.BlockID)
+	header, _, err := t.chain.GetBlockHeader(txMeta.BlockID)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +130,7 @@ func (t *Transactions) handleGetTransactionByID(w http.ResponseWriter, req *http
 	if err != nil {
 		return utils.BadRequest(errors.WithMessage(err, "head"))
 	}
-	h, err := t.chain.GetBlockHeader(head)
+	h, _, err := t.chain.GetBlockHeader(head)
 	if err != nil {
 		if t.chain.IsNotFound(err) {
 			return utils.BadRequest(errors.WithMessage(err, "head"))
@@ -166,7 +166,7 @@ func (t *Transactions) handleGetTransactionReceiptByID(w http.ResponseWriter, re
 	if err != nil {
 		return utils.BadRequest(errors.WithMessage(err, "head"))
 	}
-	h, err := t.chain.GetBlockHeader(head)
+	h, _, err := t.chain.GetBlockHeader(head)
 	if err != nil {
 		if t.chain.IsNotFound(err) {
 			return utils.BadRequest(errors.WithMessage(err, "head"))

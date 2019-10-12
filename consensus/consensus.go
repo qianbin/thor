@@ -42,7 +42,7 @@ func New(chain *chain.Chain, triex *triex.Proxy, forkConfig thor.ForkConfig) *Co
 func (c *Consensus) Process(blk *block.Block, nowTimestamp uint64) (*state.Stage, tx.Receipts, error) {
 	header := blk.Header()
 
-	if _, err := c.chain.GetBlockHeader(header.ID()); err != nil {
+	if _, _, err := c.chain.GetBlockHeader(header.ID()); err != nil {
 		if !c.chain.IsNotFound(err) {
 			return nil, nil, err
 		}
@@ -50,7 +50,7 @@ func (c *Consensus) Process(blk *block.Block, nowTimestamp uint64) (*state.Stage
 		return nil, nil, errKnownBlock
 	}
 
-	parentHeader, err := c.chain.GetBlockHeader(header.ParentID())
+	parentHeader, _, err := c.chain.GetBlockHeader(header.ParentID())
 	if err != nil {
 		if !c.chain.IsNotFound(err) {
 			return nil, nil, err
@@ -91,7 +91,7 @@ func (c *Consensus) NewRuntimeForReplay(header *block.Header, skipPoA bool) (*ru
 	if err != nil {
 		return nil, err
 	}
-	parentHeader, err := c.chain.GetBlockHeader(header.ParentID())
+	parentHeader, _, err := c.chain.GetBlockHeader(header.ParentID())
 	if err != nil {
 		if !c.chain.IsNotFound(err) {
 			return nil, err

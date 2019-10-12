@@ -135,7 +135,7 @@ func (c *Chain) setBestBlock(b *block.Block) error {
 func (c *Chain) AddBlock(newBlock *block.Block, receipts tx.Receipts) error {
 	newBlockID := newBlock.Header().ID()
 
-	if _, _, err := c.getBlockHeader(newBlockID); err != nil {
+	if _, _, err := c.GetBlockHeader(newBlockID); err != nil {
 		if !c.IsNotFound(err) {
 			return err
 		}
@@ -146,7 +146,7 @@ func (c *Chain) AddBlock(newBlock *block.Block, receipts tx.Receipts) error {
 
 	parentID := newBlock.Header().ParentID()
 
-	_, parentIndexRoot, err := c.getBlockHeader(parentID)
+	_, parentIndexRoot, err := c.GetBlockHeader(parentID)
 	if err != nil {
 		if c.IsNotFound(err) {
 			return errors.New("parent missing")
@@ -174,12 +174,7 @@ func (c *Chain) AddBlock(newBlock *block.Block, receipts tx.Receipts) error {
 }
 
 // GetBlockHeader get block header and index root by block id.
-func (c *Chain) GetBlockHeader(id thor.Bytes32) (*block.Header, error) {
-	header, _, err := c.getBlockHeader(id)
-	return header, err
-}
-
-func (c *Chain) getBlockHeader(id thor.Bytes32) (*block.Header, thor.Bytes32, error) {
+func (c *Chain) GetBlockHeader(id thor.Bytes32) (*block.Header, thor.Bytes32, error) {
 	val, err := c.headerCache.GetOrLoad(id, func(interface{}) (interface{}, error) {
 		return loadBlockHeader(c.kv, id)
 	})
@@ -192,7 +187,7 @@ func (c *Chain) getBlockHeader(id thor.Bytes32) (*block.Header, thor.Bytes32, er
 
 // GetBlock get block by id.
 func (c *Chain) GetBlock(id thor.Bytes32) (*block.Block, error) {
-	header, _, err := c.getBlockHeader(id)
+	header, _, err := c.GetBlockHeader(id)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +208,7 @@ func (c *Chain) GetBlock(id thor.Bytes32) (*block.Block, error) {
 
 // GetReceipts get all receipts in the block of given block id.
 func (c *Chain) GetReceipts(id thor.Bytes32) (tx.Receipts, error) {
-	header, _, err := c.getBlockHeader(id)
+	header, _, err := c.GetBlockHeader(id)
 	if err != nil {
 		return nil, err
 	}
