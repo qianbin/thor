@@ -32,7 +32,7 @@ func newBranch(chain *Chain, headID thor.Bytes32) *Branch {
 				if err != nil {
 					return nil, err
 				}
-				indexTrie = chain.triex.NewTrie(indexRoot, false)
+				indexTrie = chain.triex.NewTrie(indexRoot, 2, false)
 			}
 			return indexTrie, nil
 		}}
@@ -169,7 +169,7 @@ type txLocation struct {
 }
 
 func indexBlock(triex *triex.Proxy, indexRoot thor.Bytes32, block *block.Block, receipts tx.Receipts) (thor.Bytes32, error) {
-	trie := triex.NewTrie(indexRoot, false)
+	trie := triex.NewTrie(indexRoot, 2, false)
 	id := block.Header().ID()
 
 	// map block number to block ID

@@ -7,6 +7,8 @@
 package triex
 
 import (
+	"sync"
+
 	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/trie"
 )
@@ -40,7 +42,8 @@ type Proxy struct {
 	preimagePutter   putFunc
 	arbitraryGetter  getFunc
 	arbitraryPutter  putFunc
-	commitTableIndex byte
+	commitTableIndex [256]byte
+	lock             sync.Mutex
 }
 
 // New create a trie proxy.
@@ -48,28 +51,50 @@ func New(db trie.Database, cacheSizeMB int) *Proxy {
 	arbitraryGetter := arbitraryTable.ProxyGetter(db.Get)
 	val, _ := arbitraryGetter([]byte(trieCommitTableIndexKey))
 
-	commitTableIndex := byte(0)
+	var commitTableIndex [256]byte
 	if len(val) > 0 {
-		commitTableIndex = val[0]
+		copy(commitTableIndex[:], val)
 	}
 	var cache *cache
 	if cacheSizeMB > 0 {
 		cache = newCache(cacheSizeMB)
 	}
 	return &Proxy{
-		db,
-		cache,
-		cache.ProxyGetter(preimageTable.ProxyGetter(db.Get)),
-		cache.ProxyPutter(preimageTable.ProxyPutter(db.Put)),
-		arbitraryGetter,
-		arbitraryTable.ProxyPutter(db.Put),
-		commitTableIndex,
+		db:               db,
+		cache:            cache,
+		preimageGetter:   cache.ProxyGetter(preimageTable.ProxyGetter(db.Get), false),
+		preimagePutter:   cache.ProxyPutter(preimageTable.ProxyPutter(db.Put)),
+		arbitraryGetter:  arbitraryGetter,
+		arbitraryPutter:  arbitraryTable.ProxyPutter(db.Put),
+		commitTableIndex: commitTableIndex,
 	}
 }
 
 // NewTrie create a proxied trie.
-func (p *Proxy) NewTrie(root thor.Bytes32, secure bool) Trie {
-	nonSecureTrie := p.newTrie(root)
+func (p *Proxy) NewTrie(root thor.Bytes32, region byte, secure bool) Trie {
+	nonSecureTrie := p.newTrie(root, region, false)
+	if secure {
+		var (
+			hasher    = thor.NewBlake2b()
+			keyHasher = func(key []byte) (h thor.Bytes32) {
+				hasher.Reset()
+				hasher.Write(key)
+				hasher.Sum(h[:0])
+				return
+			}
+		)
+		return &secureTrie{
+			nonSecureTrie,
+			keyHasher,
+			nil,
+			p.preimagePutter,
+		}
+	}
+	return nonSecureTrie
+}
+
+func (p *Proxy) NewTrieNoUpdateCache(root thor.Bytes32, region byte, secure bool) Trie {
+	nonSecureTrie := p.newTrie(root, region, true)
 	if secure {
 		var (
 			hasher    = thor.NewBlake2b()
@@ -110,29 +135,35 @@ func (p *Proxy) PutArbitrary(key, val []byte) error {
 	return p.arbitraryPutter(key, val)
 }
 
-func (p *Proxy) RollTrieTable() (byte, byte, error) {
-	index := p.commitTableIndex + 1
-	if err := p.PutArbitrary([]byte(trieCommitTableIndexKey), []byte{index}); err != nil {
+func (p *Proxy) RollTrieTable(region byte) (byte, byte, error) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	index := p.commitTableIndex
+	index[region]++
+	if err := p.PutArbitrary([]byte(trieCommitTableIndexKey), index[:]); err != nil {
 		return 0, 0, err
 	}
 	p.commitTableIndex = index
-	t1, t2 := p.trieTables()
+	t1, t2 := p.trieTables(region)
 	return byte(t1), byte(t2), nil
 }
 
-func (p *Proxy) trieTables() (table, table) {
-	if p.commitTableIndex%2 == 0 {
-		return trieTableA, trieTableB
+func (p *Proxy) trieTables(region byte) (table, table) {
+
+	if p.commitTableIndex[region]%2 == 0 {
+		return trieTableA + table(region*2), trieTableB + table(region*2)
 	}
-	return trieTableB, trieTableA
+	return trieTableB + table(region*2), trieTableA + table(region*2)
 }
 
-func (p *Proxy) newTrie(root thor.Bytes32) *nonSecureTrie {
-	t1, t2 := p.trieTables()
+func (p *Proxy) newTrie(root thor.Bytes32, region byte, dontFillCache bool) *nonSecureTrie {
+	p.lock.Lock()
+	t1, t2 := p.trieTables(region)
+	p.lock.Unlock()
 
 	dual := dualTable{t1, t2}
 
-	getter := p.cache.ProxyGetter(dual.ProxyGetter(p.db.Get))
+	getter := p.cache.ProxyGetter(dual.ProxyGetter(p.db.Get), dontFillCache)
 	putter := p.cache.ProxyPutter(dual[0].ProxyPutter(p.db.Put))
 
 	var rawTrie *trie.Trie

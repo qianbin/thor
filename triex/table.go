@@ -44,11 +44,11 @@ func (d *dualTable) ProxyGetter(get getFunc) getFunc {
 	g1 := d[1].ProxyGetter(get)
 
 	return func(key []byte) ([]byte, error) {
-		val, err := g0.Get(key)
+		val, err := g1.Get(key)
 		if err == nil {
 			return val, nil
 		}
-		return g1.Get(key)
+		return g0.Get(key)
 	}
 }
 
@@ -57,9 +57,9 @@ func (d *dualTable) ProxyPutter(put putFunc) putFunc {
 	p1 := d[1].ProxyPutter(put)
 
 	return func(key, val []byte) error {
-		if err := p0.Put(key, val); err != nil {
+		if err := p1.Put(key, val); err != nil {
 			return err
 		}
-		return p1.Put(key, val)
+		return p0.Put(key, val)
 	}
 }

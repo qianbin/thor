@@ -18,7 +18,7 @@ type cache struct {
 func newCache(maxSizeMB int) *cache {
 	bigcache, _ := bigcache.NewBigCache(bigcache.Config{
 		Shards:             1024,
-		LifeWindow:         time.Hour,
+		LifeWindow:         time.Hour * 10,
 		MaxEntriesInWindow: maxSizeMB * 1024,
 		MaxEntrySize:       512,
 		HardMaxCacheSize:   maxSizeMB,
@@ -26,7 +26,7 @@ func newCache(maxSizeMB int) *cache {
 	return &cache{bigcache}
 }
 
-func (c *cache) ProxyGetter(get getFunc) getFunc {
+func (c *cache) ProxyGetter(get getFunc, dontFillCache bool) getFunc {
 	if c == nil {
 		return get
 	}
@@ -40,7 +40,9 @@ func (c *cache) ProxyGetter(get getFunc) getFunc {
 		if err != nil {
 			return nil, err
 		}
-		c.bigcache.Set(string(key), val)
+		if !dontFillCache {
+			c.bigcache.Set(string(key), val)
+		}
 		return val, nil
 	}
 }

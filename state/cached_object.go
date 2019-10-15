@@ -30,7 +30,7 @@ func newCachedObject(triex *triex.Proxy, data *Account) *cachedObject {
 func (co *cachedObject) getOrCreateStorageTrie() triex.Trie {
 	if co.cache.storageTrie == nil {
 		co.cache.storageTrie = co.triex.NewTrie(
-			thor.BytesToBytes32(co.data.StorageRoot),
+			thor.BytesToBytes32(co.data.StorageRoot), 1,
 			true)
 	}
 	return co.cache.storageTrie

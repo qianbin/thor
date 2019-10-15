@@ -29,6 +29,7 @@ import (
 	"github.com/vechain/thor/genesis"
 	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/logdb"
+	"github.com/vechain/thor/lvldb"
 	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/triex"
@@ -126,36 +127,165 @@ func main() {
 }
 
 func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
-	go func() {
-		bb := thor.NewBigBloom(256, 3)
+
+	ssbb := thor.NewBigBloom(128, 3)
+	ssSumDeleted := make(map[byte]int)
+	pruneStorage := func() {
+		fmt.Println("storageTrie: roll table")
+		_, pruneTable, err := triex.RollTrieTable(1)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		n := chain.BestBlock().Header().Number()
+		for {
+			if chain.BestBlock().Header().Number() > n+20 {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		n = chain.BestBlock().Header().Number()
+		for {
+			if chain.BestBlock().Header().Number() > n+20 {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		b, err := chain.NewTrunk().GetBlock(n)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		fmt.Println("storageTrie: snapshot")
+
+		ssbb.Reset()
+
+		snapshotEntries := 0
+
+		trie := triex.NewTrie(b.Header().StateRoot(), 0, false)
+
+		accIt, err := trie.NodeIterator(nil)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		for accIt.Next(true) {
+			// if hash := accIt.Hash(); !hash.IsZero() {
+			// 	snapshotEntries++
+			// 	bb.Add(hash)
+			// }
+
+			if accIt.Leaf() {
+
+				blob := accIt.LeafBlob()
+				var acc state.Account
+				if err := rlp.DecodeBytes(blob, &acc); err != nil {
+					fmt.Println(err)
+					return
+				}
+				if len(acc.StorageRoot) > 0 {
+					str := triex.NewTrie(thor.BytesToBytes32(acc.StorageRoot), 1, false)
+					sit, err := str.NodeIterator(nil)
+					if err != nil {
+						fmt.Println(err)
+						return
+					}
+					for sit.Next(true) {
+						if h := sit.Hash(); !h.IsZero() {
+							snapshotEntries++
+							ssbb.Add(h)
+						}
+					}
+					if err := sit.Error(); err != nil {
+						panic(err)
+					}
+				}
+			}
+		}
+
+		if err := accIt.Error(); err != nil {
+			panic(err)
+		}
+
+		fmt.Println("storageTrie: snapshot done", snapshotEntries, "entries")
 
 		for {
-			for {
-				if chain.BestBlock().Header().Number() > 100000 {
-					break
-				}
-				time.Sleep(time.Second)
+			if chain.BestBlock().Header().Number() > n+5000 {
+				break
+
 			}
+			time.Sleep(time.Second)
+		}
 
-			fmt.Println("roll trie table")
-			_, pruneTable, err := triex.RollTrieTable()
+		fmt.Println("storageTrie: start pruning ", pruneTable)
+
+		scanedEntries := 0
+		deletedEntries := 0
+
+		rng := *kv.NewRangeWithBytesPrefix([]byte{pruneTable})
+
+		ittt := rawDB.NewIterator(rng)
+		for ittt.Next() {
+			scanedEntries++
+			k := ittt.Key()
+			if !ssbb.Test(thor.BytesToBytes32(k[1:])) {
+				rawDB.Delete(k)
+				deletedEntries++
+			}
+		}
+		ittt.Release()
+
+		fmt.Println("storageTrie: deleted", deletedEntries, "/", scanedEntries, "entries")
+		ssSumDeleted[pruneTable] += deletedEntries
+
+		if ssSumDeleted[pruneTable] > 100000 {
+			ssSumDeleted[pruneTable] = 0
+			fmt.Println("storageTrie: do compact")
+			if err := rawDB.(*lvldb.LevelDB).CompactRange(rng); err != nil {
+				fmt.Println(err)
+			}
+			fmt.Println("storageTrie: compact done")
+		}
+	}
+	// account
+	go func() {
+
+		for {
+			if chain.BestBlock().Header().Number() > 10000 {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		bb := thor.NewBigBloom(128, 3)
+		sumDeleted := make(map[byte]int)
+		for {
+			fmt.Println("accountTrie: roll table")
+			_, pruneTable, err := triex.RollTrieTable(0)
 			if err != nil {
-
 				fmt.Println(err)
 				return
 			}
 
 			n := chain.BestBlock().Header().Number()
 			for {
-				if chain.BestBlock().Header().Number() > n+200 {
+				if chain.BestBlock().Header().Number() > n+20 {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+			n = chain.BestBlock().Header().Number()
+			for {
+				if chain.BestBlock().Header().Number() > n+20 {
 					break
 				}
 				time.Sleep(time.Second)
 			}
 
-			fmt.Println("snapshot")
+			fmt.Println("accountTrie: snapshot")
 
-			b, err := chain.NewTrunk().GetBlock(n + 100)
+			b, err := chain.NewTrunk().GetBlock(n)
 			if err != nil {
 				fmt.Println(err)
 				return
@@ -165,7 +295,7 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 
 			snapshotEntries := 0
 
-			trie := triex.NewTrie(b.Header().StateRoot(), false)
+			trie := triex.NewTrie(b.Header().StateRoot(), 0, false)
 
 			accIt, err := trie.NodeIterator(nil)
 			if err != nil {
@@ -177,68 +307,283 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 					snapshotEntries++
 					bb.Add(hash)
 				}
+			}
+			if err := accIt.Error(); err != nil {
+				panic(err)
+			}
 
-				if accIt.Leaf() {
-					if accIt.Leaf() {
-						blob := accIt.LeafBlob()
-						var acc state.Account
-						if err := rlp.DecodeBytes(blob, &acc); err != nil {
-							fmt.Println(err)
-							return
-						}
-						if len(acc.StorageRoot) > 0 {
-							str := triex.NewTrie(thor.BytesToBytes32(acc.StorageRoot), false)
-							sit, err := str.NodeIterator(nil)
-							if err != nil {
-								fmt.Println(err)
-								return
-							}
-							for sit.Next(true) {
-								if h := sit.Hash(); !h.IsZero() {
-									snapshotEntries++
-									bb.Add(h)
-								}
-							}
-						}
-					}
+			fmt.Println("accountTrie: snapshot done", snapshotEntries, "entries")
+
+			for {
+				if chain.BestBlock().Header().Number() > n+65536+50 {
+					break
+
+				}
+				pruneStorage()
+			}
+
+			fmt.Println("accountTrie: start pruning ", pruneTable)
+
+			scanedEntries := 0
+			deletedEntries := 0
+
+			rng := *kv.NewRangeWithBytesPrefix([]byte{pruneTable})
+
+			ittt := rawDB.NewIterator(rng)
+			for ittt.Next() {
+				scanedEntries++
+				k := ittt.Key()
+				if !bb.Test(thor.BytesToBytes32(k[1:])) {
+					rawDB.Delete(k)
+					deletedEntries++
 				}
 			}
+			ittt.Release()
+			fmt.Println("accountTrie: deleted", deletedEntries, "/", scanedEntries, "entries")
+			sumDeleted[pruneTable] += deletedEntries
+			if sumDeleted[pruneTable] > 100000 {
+				sumDeleted[pruneTable] = 0
 
-			_, iroot, err := chain.GetBlockHeader(b.Header().ID())
-			if err != nil {
-				return
+				fmt.Println("accountTrie: do compact")
+				if err := rawDB.(*lvldb.LevelDB).CompactRange(rng); err != nil {
+					fmt.Println(err)
+				}
+				fmt.Println("accountTrie: compact done")
 			}
+		}
+	}()
 
-			itr := triex.NewTrie(iroot, false)
-			iIt, err := itr.NodeIterator(nil)
+	// // storage tries
+	// go func() {
+	// 	bb := thor.NewBigBloom(128, 3)
+	// 	for {
+	// 		if chain.BestBlock().Header().Number() > 10000 {
+	// 			break
+	// 		}
+	// 		time.Sleep(time.Second)
+	// 	}
+	// 	sumDeleted := make(map[byte]int)
+
+	// 	for {
+	// 		fmt.Println("storageTrie: roll table")
+	// 		_, pruneTable, err := triex.RollTrieTable(1)
+	// 		if err != nil {
+	// 			fmt.Println(err)
+	// 			return
+	// 		}
+
+	// 		n := chain.BestBlock().Header().Number()
+	// 		for {
+	// 			if chain.BestBlock().Header().Number() > n+50 {
+	// 				break
+	// 			}
+	// 			time.Sleep(time.Second)
+	// 		}
+
+	// 		fmt.Println("storageTrie: snapshot")
+
+	// 		b, err := chain.NewTrunk().GetBlock(n)
+	// 		if err != nil {
+	// 			fmt.Println(err)
+	// 			return
+	// 		}
+
+	// 		bb.Reset()
+
+	// 		snapshotEntries := 0
+
+	// 		trie := triex.NewTrie(b.Header().StateRoot(), 0, false)
+
+	// 		accIt, err := trie.NodeIterator(nil)
+	// 		if err != nil {
+	// 			fmt.Println(err)
+	// 			return
+	// 		}
+	// 		for accIt.Next(true) {
+	// 			// if hash := accIt.Hash(); !hash.IsZero() {
+	// 			// 	snapshotEntries++
+	// 			// 	bb.Add(hash)
+	// 			// }
+
+	// 			if accIt.Leaf() {
+
+	// 				blob := accIt.LeafBlob()
+	// 				var acc state.Account
+	// 				if err := rlp.DecodeBytes(blob, &acc); err != nil {
+	// 					fmt.Println(err)
+	// 					return
+	// 				}
+	// 				if len(acc.StorageRoot) > 0 {
+	// 					str := triex.NewTrie(thor.BytesToBytes32(acc.StorageRoot), 1, false)
+	// 					sit, err := str.NodeIterator(nil)
+	// 					if err != nil {
+	// 						fmt.Println(err)
+	// 						return
+	// 					}
+	// 					for sit.Next(true) {
+	// 						if h := sit.Hash(); !h.IsZero() {
+	// 							snapshotEntries++
+	// 							bb.Add(h)
+	// 						}
+	// 					}
+	// 					if err := sit.Error(); err != nil {
+	// 						panic(err)
+	// 					}
+	// 				}
+	// 			}
+	// 		}
+
+	// 		if err := accIt.Error(); err != nil {
+	// 			panic(err)
+	// 		}
+
+	// 		fmt.Println("storageTrie: snapshot done", snapshotEntries, "entries")
+
+	// 		for {
+	// 			if chain.BestBlock().Header().Number() > n+10000 {
+	// 				break
+
+	// 			}
+	// 			time.Sleep(time.Second)
+	// 		}
+
+	// 		fmt.Println("storageTrie: start pruning ", pruneTable)
+
+	// 		scanedEntries := 0
+	// 		deletedEntries := 0
+
+	// 		rng := *kv.NewRangeWithBytesPrefix([]byte{pruneTable})
+
+	// 		ittt := rawDB.NewIterator(rng)
+	// 		for ittt.Next() {
+	// 			scanedEntries++
+	// 			k := ittt.Key()
+	// 			if !bb.Test(thor.BytesToBytes32(k[1:])) {
+	// 				rawDB.Delete(k)
+	// 				deletedEntries++
+	// 			}
+	// 		}
+	// 		ittt.Release()
+
+	// 		fmt.Println("storageTrie: deleted", deletedEntries, "/", scanedEntries, "entries")
+	// 		sumDeleted[pruneTable] += deletedEntries
+
+	// 		if sumDeleted[pruneTable] > 100000 {
+	// 			sumDeleted[pruneTable] = 0
+	// 			fmt.Println("storageTrie: do compact")
+	// 			if err := rawDB.(*lvldb.LevelDB).CompactRange(rng); err != nil {
+	// 				fmt.Println(err)
+	// 			}
+	// 			fmt.Println("storageTrie: compact done")
+	// 		}
+	// 	}
+	// }()
+
+	// index trie
+	go func() {
+		for {
+			if chain.BestBlock().Header().Number() > 5000 {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+
+		bb := thor.NewBigBloom(128, 3)
+		sumDeleted := make(map[byte]int)
+
+		// index trie pruning
+		for {
+			fmt.Println("indexTrie: roll table")
+			_, pruneTable, err := triex.RollTrieTable(2)
 			if err != nil {
 				fmt.Println(err)
 				return
 			}
 
-			for iIt.Next(true) {
-				if h := iIt.Hash(); !h.IsZero() {
-					snapshotEntries++
-					bb.Add(h)
-				}
-			}
-
-			fmt.Println("done snapshot,", snapshotEntries, "entries")
-
+			n := chain.BestBlock().Header().Number()
 			for {
-				if chain.BestBlock().Header().Number() > n+70000 {
+				if chain.BestBlock().Header().Number() > n+20 {
 					break
-
+				}
+				time.Sleep(time.Second)
+			}
+			n = chain.BestBlock().Header().Number()
+			for {
+				if chain.BestBlock().Header().Number() > n+20 {
+					break
 				}
 				time.Sleep(time.Second)
 			}
 
-			fmt.Println("start pruning")
-			fmt.Println("pruning table ", pruneTable)
+			id, err := chain.NewTrunk().GetBlockID(n)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+
+			_, root, err := chain.GetBlockHeader(id)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			bb.Reset()
+			fmt.Println("indexTrie: snapshot")
+
+			it, err := triex.NewTrie(root, 2, false).NodeIterator(nil)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			entries := 0
+			for it.Next(true) {
+				if hash := it.Hash(); !hash.IsZero() {
+					entries++
+					bb.Add(hash)
+				}
+			}
+			if err := it.Error(); err != nil {
+				panic(err)
+			}
+			fmt.Println("indexTrie: snapshot done", entries, "entries")
+
+			for {
+				if chain.BestBlock().Header().Number() > n+20000 {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+
+			fmt.Println("indexTrie: pruning table", pruneTable)
 
 			scanedEntries := 0
 			deletedEntries := 0
+
 			rng := *kv.NewRangeWithBytesPrefix([]byte{pruneTable})
+
+			ittt := rawDB.NewIterator(rng)
+			for ittt.Next() {
+				scanedEntries++
+				k := ittt.Key()
+				if !bb.Test(thor.BytesToBytes32(k[1:])) {
+					rawDB.Delete(k)
+					deletedEntries++
+				}
+			}
+			ittt.Release()
+			fmt.Println("indexTrie: deleted", deletedEntries, "/", scanedEntries, "entries")
+			sumDeleted[pruneTable] += deletedEntries
+			if sumDeleted[pruneTable] > 100000 {
+				sumDeleted[pruneTable] = 0
+				fmt.Println("indexTrie: do compact")
+				if err := rawDB.(*lvldb.LevelDB).CompactRange(rng); err != nil {
+					fmt.Println(err)
+				}
+				fmt.Println("indexTrie: compact done")
+			}
+		}
+
+		/*
+			rng := *kv.NewRange(nil, nil)
 
 			for {
 				batch := rawDB.NewBatch()
@@ -252,14 +597,16 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 						// } else {
 						// 	end = append([]byte(nil), ittt.Key()...)
 						// }
+
 						k := append([]byte(nil), ittt.Key()...)
 						rng.From = k
+						if k[len(k)-1] == pruneTable {
+							scanedEntries++
 
-						scanedEntries++
-
-						if !bb.Test(thor.BytesToBytes32(k[1:])) {
-							batch.Delete(k)
-							deletedEntries++
+							if !bb.Test(thor.BytesToBytes32(k[:len(k)-1])) {
+								batch.Delete(k)
+								deletedEntries++
+							}
 						}
 					} else {
 						nomore = true
@@ -283,14 +630,15 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 					break
 				}
 			}
-			fmt.Println("done pruning, ", "deleted", deletedEntries, "/", scanedEntries, "entries")
+		*/
+		// fmt.Println("done pruning, ", "deleted", deletedEntries, "/", scanedEntries, "entries")
 
-			// if bestN > c.Snap.Num+100000 {
-			// 	trie.SetDatabaseHook(&DBHook{})
-			// 	c.Snap.Num
-			// }
+		// if bestN > c.Snap.Num+100000 {
+		// 	trie.SetDatabaseHook(&DBHook{})
+		// 	c.Snap.Num
+		// }
 
-		}
+		// }
 
 	}()
 	return nil
@@ -336,6 +684,20 @@ func defaultAction(ctx *cli.Context) error {
 
 	chain := initChain(gene, chainDB, triex, logDB)
 
+	// _, indexRoot, _ := chain.GetBlockHeader(chain.BestBlock().Header().ID())
+
+	// it, _ := triex.NewTrie(indexRoot, false).NodeIterator(nil)
+	// n := 0
+
+	// for it.Next(true) {
+	// 	if h := it.Hash(); !h.IsZero() {
+	// 		// fmt.Println(h)
+	// 		n++
+	// 	}
+	// }
+
+	// fmt.Println(n)
+	// return nil
 	prune(triex, stateDB, chain)
 
 	master := loadNodeMaster(ctx)

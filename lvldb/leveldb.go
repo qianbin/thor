@@ -24,7 +24,9 @@ type Options struct {
 }
 
 var writeOpt = opt.WriteOptions{}
-var readOpt = opt.ReadOptions{}
+var readOpt = opt.ReadOptions{
+	DontTriggerCompaction: true,
+}
 
 // LevelDB wraps level db impls.
 type LevelDB struct {
@@ -43,12 +45,12 @@ func New(path string, opts Options) (*LevelDB, error) {
 	}
 
 	db, err := leveldb.OpenFile(path, &opt.Options{
-		// CompactionTableSizeMultiplier: 2,
-		OpenFilesCacheCapacity: opts.OpenFilesCacheCapacity,
-		BlockCacheCapacity:     opts.CacheSize / 2 * opt.MiB,
-		WriteBuffer:            opts.CacheSize / 4 * opt.MiB, // Two of these are used internally
-		Filter:                 filter.NewBloomFilter(10),
-		// DisableSeeksCompaction: true,
+		CompactionTableSizeMultiplier: 2,
+		OpenFilesCacheCapacity:        opts.OpenFilesCacheCapacity,
+		BlockCacheCapacity:            opts.CacheSize / 2 * opt.MiB,
+		WriteBuffer:                   opts.CacheSize / 4 * opt.MiB, // Two of these are used internally
+		Filter:                        filter.NewBloomFilter(10),
+		DisableSeeksCompaction:        true,
 	})
 
 	if _, corrupted := err.(*dberrors.ErrCorrupted); corrupted {
@@ -130,6 +132,13 @@ func (ldb *LevelDB) DDelete(f func(d func(k []byte) error) error) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+func (ldb *LevelDB) CompactRange(r kv.Range) error {
+	return ldb.db.CompactRange(util.Range{
+		Start: r.From,
+		Limit: r.To,
+	})
 }
 
 //////

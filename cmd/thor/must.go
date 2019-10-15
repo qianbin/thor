@@ -159,13 +159,13 @@ func openStateDB(ctx *cli.Context, dataDir string) (kv.GetPutCloser, int) {
 
 	dir := filepath.Join(dataDir, "state.db")
 	stateDB, err := lvldb.New(dir, lvldb.Options{
-		CacheSize:              cacheMB / 2,
+		CacheSize:              cacheMB / 4,
 		OpenFilesCacheCapacity: fdCache,
 	})
 	if err != nil {
 		fatal(fmt.Sprintf("open state database [%v]: %v", dir, err))
 	}
-	return stateDB, cacheMB / 2
+	return stateDB, cacheMB * 3 / 4
 }
 
 func normalizeCacheSize(sizeMB int) int {

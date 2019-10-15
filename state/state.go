@@ -33,7 +33,7 @@ func New(triex *triex.Proxy, root thor.Bytes32) *State {
 	state := State{
 		triex: triex,
 		root:  root,
-		trie:  triex.NewTrie(root, true),
+		trie:  triex.NewTrie(root, 0, true),
 		cache: make(map[thor.Address]*cachedObject),
 	}
 	state.setError = func(err error) {
@@ -347,7 +347,7 @@ func (s *State) RevertTo(revision int) {
 func (s *State) BuildStorageTrie(addr thor.Address) (triex.Trie, error) {
 	acc := s.getAccount(addr)
 
-	trie := s.triex.NewTrie(thor.BytesToBytes32(acc.StorageRoot), true)
+	trie := s.triex.NewTrie(thor.BytesToBytes32(acc.StorageRoot), 1, true)
 	// traverse journal to filter out storage changes for addr
 	s.sm.Journal(func(k, v interface{}) bool {
 		switch key := k.(type) {
