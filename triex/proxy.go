@@ -7,6 +7,7 @@
 package triex
 
 import (
+	"encoding/binary"
 	"sync"
 
 	"github.com/vechain/thor/thor"
@@ -19,10 +20,9 @@ const (
 	// preimageTable the table to store non-trie preimages.
 	preimageTable table = '\x01'
 	// trieCommitTableIndexKey key to store index of table which tries are committed to.
-	trieCommitTableIndexKey = "trie-commit-table-index"
+	// trieCommitTableIndexKey = "trie-commit-table-index"
 
-	trieTableA table = '\x02'
-	trieTableB table = '\x03'
+	trieTable table = '\x02'
 )
 
 // Trie merkle patricia trie interface.
@@ -32,69 +32,48 @@ type Trie interface {
 	Hash() (thor.Bytes32, error)
 	Commit() (thor.Bytes32, error)
 	NodeIterator(start []byte) (trie.NodeIterator, error)
+	Prefix() []byte
 }
 
 // Proxy to help create tries, which are enhanced by caching, pruning, etc.
 type Proxy struct {
-	db               trie.Database
-	cache            *cache
-	preimageGetter   getFunc
-	preimagePutter   putFunc
-	arbitraryGetter  getFunc
-	arbitraryPutter  putFunc
-	commitTableIndex [256]byte
-	lock             sync.Mutex
+	db              trie.Database
+	cache           *cache
+	preimageGetter  getFunc
+	preimagePutter  putFunc
+	arbitraryGetter getFunc
+	arbitraryPutter putFunc
+	// commitTableIndex [256]byte
+	lock sync.Mutex
 }
 
 // New create a trie proxy.
 func New(db trie.Database, cacheSizeMB int) *Proxy {
 	arbitraryGetter := arbitraryTable.ProxyGetter(db.Get)
-	val, _ := arbitraryGetter([]byte(trieCommitTableIndexKey))
+	// val, _ := arbitraryGetter([]byte(trieCommitTableIndexKey))
 
-	var commitTableIndex [256]byte
-	if len(val) > 0 {
-		copy(commitTableIndex[:], val)
-	}
+	// var commitTableIndex [256]byte
+	// if len(val) > 0 {
+	// 	copy(commitTableIndex[:], val)
+	// }
 	var cache *cache
 	if cacheSizeMB > 0 {
 		cache = newCache(cacheSizeMB)
 	}
 	return &Proxy{
-		db:               db,
-		cache:            cache,
-		preimageGetter:   cache.ProxyGetter(preimageTable.ProxyGetter(db.Get), false),
-		preimagePutter:   cache.ProxyPutter(preimageTable.ProxyPutter(db.Put)),
-		arbitraryGetter:  arbitraryGetter,
-		arbitraryPutter:  arbitraryTable.ProxyPutter(db.Put),
-		commitTableIndex: commitTableIndex,
+		db:              db,
+		cache:           cache,
+		preimageGetter:  cache.ProxyGetter(preimageTable.ProxyGetter(db.Get)),
+		preimagePutter:  cache.ProxyPutter(preimageTable.ProxyPutter(db.Put)),
+		arbitraryGetter: arbitraryGetter,
+		arbitraryPutter: arbitraryTable.ProxyPutter(db.Put),
+		// commitTableIndex: commitTableIndex,
 	}
 }
 
 // NewTrie create a proxied trie.
-func (p *Proxy) NewTrie(root thor.Bytes32, region byte, secure bool) Trie {
-	nonSecureTrie := p.newTrie(root, region, false)
-	if secure {
-		var (
-			hasher    = thor.NewBlake2b()
-			keyHasher = func(key []byte) (h thor.Bytes32) {
-				hasher.Reset()
-				hasher.Write(key)
-				hasher.Sum(h[:0])
-				return
-			}
-		)
-		return &secureTrie{
-			nonSecureTrie,
-			keyHasher,
-			nil,
-			p.preimagePutter,
-		}
-	}
-	return nonSecureTrie
-}
-
-func (p *Proxy) NewTrieNoUpdateCache(root thor.Bytes32, region byte, secure bool) Trie {
-	nonSecureTrie := p.newTrie(root, region, true)
+func (p *Proxy) NewTrie(root thor.Bytes32, n uint32, secure bool) Trie {
+	nonSecureTrie := p.newTrie(root, n)
 	if secure {
 		var (
 			hasher    = thor.NewBlake2b()
@@ -135,40 +114,49 @@ func (p *Proxy) PutArbitrary(key, val []byte) error {
 	return p.arbitraryPutter(key, val)
 }
 
-func (p *Proxy) RollTrieTable(region byte) (byte, byte, error) {
-	p.lock.Lock()
-	defer p.lock.Unlock()
-	index := p.commitTableIndex
-	index[region]++
-	if err := p.PutArbitrary([]byte(trieCommitTableIndexKey), index[:]); err != nil {
-		return 0, 0, err
-	}
-	p.commitTableIndex = index
-	t1, t2 := p.trieTables(region)
-	return byte(t1), byte(t2), nil
-}
+// func (p *Proxy) RollTrieTable(region byte) (byte, byte, error) {
+// 	p.lock.Lock()
+// 	defer p.lock.Unlock()
+// 	index := p.commitTableIndex
+// 	index[region]++
+// 	if err := p.PutArbitrary([]byte(trieCommitTableIndexKey), index[:]); err != nil {
+// 		return 0, 0, err
+// 	}
+// 	p.commitTableIndex = index
+// 	t1, t2 := p.trieTables(region)
+// 	return byte(t1), byte(t2), nil
+// }
 
-func (p *Proxy) trieTables(region byte) (table, table) {
+// func (p *Proxy) trieTables(region byte) (table, table) {
 
-	if p.commitTableIndex[region]%2 == 0 {
-		return trieTableA + table(region*2), trieTableB + table(region*2)
-	}
-	return trieTableB + table(region*2), trieTableA + table(region*2)
-}
+// 	if p.commitTableIndex[region]%2 == 0 {
+// 		return trieTableA + table(region*2), trieTableB + table(region*2)
+// 	}
+// 	return trieTableB + table(region*2), trieTableA + table(region*2)
+// }
 
-func (p *Proxy) newTrie(root thor.Bytes32, region byte, dontFillCache bool) *nonSecureTrie {
-	p.lock.Lock()
-	t1, t2 := p.trieTables(region)
-	p.lock.Unlock()
+func (p *Proxy) newTrie(root thor.Bytes32, n uint32) *nonSecureTrie {
+	// p.lock.Lock()
+	// t1, t2 := p.trieTables(region)
+	// p.lock.Unlock()
 
-	dual := dualTable{t1, t2}
+	// dual := dualTable{t1, t2}
 
-	getter := p.cache.ProxyGetter(dual.ProxyGetter(p.db.Get), dontFillCache)
-	putter := p.cache.ProxyPutter(dual[0].ProxyPutter(p.db.Put))
+	rgen := (n - 1) / 100000
+	wgen := n / 100000
+	getter := p.cache.ProxyGetter(
+		genr(rgen).ProxyGetter(
+			trieTable.ProxyGetter(
+				p.db.Get)))
+	putter := p.cache.ProxyPutter(
+		genr(wgen).ProxyPutter(
+			trieTable.ProxyPutter(
+				p.db.Put)))
 
 	var rawTrie *trie.Trie
 	nonSecureTrie := &nonSecureTrie{
-		func() (*trie.Trie, error) {
+		gen: uint16(wgen),
+		getTrie: func() (*trie.Trie, error) {
 			if rawTrie == nil {
 				var err error
 				rawTrie, err = trie.New(root, struct {
@@ -190,6 +178,7 @@ func (p *Proxy) newTrie(root thor.Bytes32, region byte, dontFillCache bool) *non
 }
 
 type nonSecureTrie struct {
+	gen     uint16
 	getTrie func() (*trie.Trie, error)
 }
 
@@ -230,6 +219,13 @@ func (n *nonSecureTrie) NodeIterator(start []byte) (trie.NodeIterator, error) {
 		return nil, err
 	}
 	return trie.NodeIterator(start), nil
+}
+
+func (n *nonSecureTrie) Prefix() []byte {
+	var p [3]byte
+	p[0] = byte(trieTable)
+	binary.BigEndian.PutUint16(p[1:], n.gen)
+	return p[:]
 }
 
 type secureTrie struct {

@@ -25,9 +25,9 @@ type codeWithHash struct {
 	hash []byte
 }
 
-func newStage(trieProxy *triex.Proxy, root thor.Bytes32, changes map[thor.Address]*changedObject) *Stage {
+func newStage(trieProxy *triex.Proxy, root thor.Bytes32, changes map[thor.Address]*changedObject, blockNum uint32) *Stage {
 
-	accountTrie := trieProxy.NewTrie(root, 0, true)
+	accountTrie := trieProxy.NewTrie(root, blockNum, true)
 
 	storageTries := make([]triex.Trie, 0, len(changes))
 	codes := make([]codeWithHash, 0, len(changes))
@@ -44,7 +44,7 @@ func newStage(trieProxy *triex.Proxy, root thor.Bytes32, changes map[thor.Addres
 		// skip storage changes if account is empty
 		if !dataCpy.IsEmpty() {
 			if len(obj.storage) > 0 {
-				strie := trieProxy.NewTrie(thor.BytesToBytes32(dataCpy.StorageRoot), 1, true)
+				strie := trieProxy.NewTrie(thor.BytesToBytes32(dataCpy.StorageRoot), blockNum, true)
 				storageTries = append(storageTries, strie)
 				for k, v := range obj.storage {
 					if err := strie.Update(k[:], v); err != nil {

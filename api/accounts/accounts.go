@@ -48,8 +48,8 @@ func New(
 	}
 }
 
-func (a *Accounts) getCode(addr thor.Address, stateRoot thor.Bytes32) ([]byte, error) {
-	state := state.New(a.triex, stateRoot)
+func (a *Accounts) getCode(addr thor.Address, header *block.Header) ([]byte, error) {
+	state := state.New(a.triex, header.StateRoot(), header.Number())
 
 	code := state.GetCode(addr)
 	if err := state.Err(); err != nil {
@@ -68,7 +68,7 @@ func (a *Accounts) handleGetCode(w http.ResponseWriter, req *http.Request) error
 	if err != nil {
 		return err
 	}
-	code, err := a.getCode(addr, h.StateRoot())
+	code, err := a.getCode(addr, h)
 	if err != nil {
 		return err
 	}
@@ -76,7 +76,7 @@ func (a *Accounts) handleGetCode(w http.ResponseWriter, req *http.Request) error
 }
 
 func (a *Accounts) getAccount(addr thor.Address, header *block.Header) (*Account, error) {
-	state := state.New(a.triex, header.StateRoot())
+	state := state.New(a.triex, header.StateRoot(), header.Number())
 
 	b := state.GetBalance(addr)
 	code := state.GetCode(addr)
@@ -91,8 +91,8 @@ func (a *Accounts) getAccount(addr thor.Address, header *block.Header) (*Account
 	}, nil
 }
 
-func (a *Accounts) getStorage(addr thor.Address, key thor.Bytes32, stateRoot thor.Bytes32) (thor.Bytes32, error) {
-	state := state.New(a.triex, stateRoot)
+func (a *Accounts) getStorage(addr thor.Address, key thor.Bytes32, header *block.Header) (thor.Bytes32, error) {
+	state := state.New(a.triex, header.StateRoot(), header.Number())
 
 	storage := state.GetStorage(addr, key)
 	if err := state.Err(); err != nil {
@@ -130,7 +130,7 @@ func (a *Accounts) handleGetStorage(w http.ResponseWriter, req *http.Request) er
 	if err != nil {
 		return err
 	}
-	storage, err := a.getStorage(addr, key, h.StateRoot())
+	storage, err := a.getStorage(addr, key, h)
 	if err != nil {
 		return err
 	}
@@ -194,7 +194,7 @@ func (a *Accounts) batchCall(ctx context.Context, batchCallData *BatchCallData, 
 	if err != nil {
 		return nil, err
 	}
-	state := state.New(a.triex, header.StateRoot())
+	state := state.New(a.triex, header.StateRoot(), header.Number())
 
 	signer, _ := header.Signer()
 	rt := runtime.New(a.chain.NewSeeker(header.ParentID()), state,

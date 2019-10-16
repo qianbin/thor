@@ -49,7 +49,7 @@ func New(
 
 // Schedule schedule a packing flow to pack new block upon given parent and clock time.
 func (p *Packer) Schedule(parent *block.Header, nowTimestamp uint64) (flow *Flow, err error) {
-	state := state.New(p.triex, parent.StateRoot())
+	state := state.New(p.triex, parent.StateRoot(), parent.Number())
 
 	// Before process hook of VIP-191, update builtin extension contract's code to V2
 	vip191 := p.forkConfig.VIP191
@@ -120,7 +120,7 @@ func (p *Packer) Schedule(parent *block.Header, nowTimestamp uint64) (flow *Flow
 // It will skip the PoA verification and scheduling, and the block produced by
 // the returned flow is not in consensus.
 func (p *Packer) Mock(parent *block.Header, targetTime uint64, gasLimit uint64) (*Flow, error) {
-	state := state.New(p.triex, parent.StateRoot())
+	state := state.New(p.triex, parent.StateRoot(), parent.Number())
 
 	// Before process hook of VIP-191, update builtin extension contract's code to V2
 	vip191 := p.forkConfig.VIP191

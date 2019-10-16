@@ -169,7 +169,7 @@ func (p *TxPool) add(newTx *tx.Transaction, rejectNonexecutable bool) error {
 	}
 
 	if isChainSynced(uint64(time.Now().Unix()), headBlock.Timestamp()) {
-		state := state.New(p.triex, headBlock.StateRoot())
+		state := state.New(p.triex, headBlock.StateRoot(), headBlock.Number())
 
 		executable, err := txObj.Executable(p.chain, state, headBlock)
 		if err != nil {
@@ -274,7 +274,7 @@ func (p *TxPool) wash(headBlock *block.Header) (executables tx.Transactions, rem
 		}
 	}()
 
-	state := state.New(p.triex, headBlock.StateRoot())
+	state := state.New(p.triex, headBlock.StateRoot(), headBlock.Number())
 
 	var (
 		seeker            = p.chain.NewSeeker(headBlock.ID())

@@ -51,7 +51,6 @@ func New(path string, opts Options) (*LevelDB, error) {
 		WriteBuffer:                   opts.CacheSize / 4 * opt.MiB, // Two of these are used internally
 		Filter:                        filter.NewBloomFilter(10),
 		DisableSeeksCompaction:        true,
-		DisableCompactionBackoff:      true,
 	})
 
 	if _, corrupted := err.(*dberrors.ErrCorrupted); corrupted {

@@ -13,8 +13,9 @@ import (
 
 // cachedObject to cache code and storage of an account.
 type cachedObject struct {
-	triex *triex.Proxy
-	data  Account
+	triex    *triex.Proxy
+	data     Account
+	blockNum uint32
 
 	cache struct {
 		code        []byte
@@ -23,14 +24,14 @@ type cachedObject struct {
 	}
 }
 
-func newCachedObject(triex *triex.Proxy, data *Account) *cachedObject {
-	return &cachedObject{triex: triex, data: *data}
+func newCachedObject(triex *triex.Proxy, data *Account, blockNum uint32) *cachedObject {
+	return &cachedObject{triex: triex, data: *data, blockNum: blockNum}
 }
 
 func (co *cachedObject) getOrCreateStorageTrie() triex.Trie {
 	if co.cache.storageTrie == nil {
 		co.cache.storageTrie = co.triex.NewTrie(
-			thor.BytesToBytes32(co.data.StorageRoot), 1,
+			thor.BytesToBytes32(co.data.StorageRoot), co.blockNum,
 			true)
 	}
 	return co.cache.storageTrie

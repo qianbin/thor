@@ -26,7 +26,7 @@ func newCache(maxSizeMB int) *cache {
 	return &cache{bigcache}
 }
 
-func (c *cache) ProxyGetter(get getFunc, dontFillCache bool) getFunc {
+func (c *cache) ProxyGetter(get getFunc) getFunc {
 	if c == nil {
 		return get
 	}
@@ -40,9 +40,8 @@ func (c *cache) ProxyGetter(get getFunc, dontFillCache bool) getFunc {
 		if err != nil {
 			return nil, err
 		}
-		if !dontFillCache {
-			c.bigcache.Set(string(key), val)
-		}
+
+		c.bigcache.Set(string(key), val)
 		return val, nil
 	}
 }

@@ -26,15 +26,17 @@ type State struct {
 	sm       *stackedmap.StackedMap         // keeps revisions of accounts state
 	err      error
 	setError func(err error)
+	blockNum uint32
 }
 
 // New create an state object.
-func New(triex *triex.Proxy, root thor.Bytes32) *State {
+func New(triex *triex.Proxy, root thor.Bytes32, blockNum uint32) *State {
 	state := State{
-		triex: triex,
-		root:  root,
-		trie:  triex.NewTrie(root, 0, true),
-		cache: make(map[thor.Address]*cachedObject),
+		triex:    triex,
+		root:     root,
+		trie:     triex.NewTrie(root, blockNum, true),
+		cache:    make(map[thor.Address]*cachedObject),
+		blockNum: blockNum,
 	}
 	state.setError = func(err error) {
 		if state.err == nil {
@@ -50,7 +52,7 @@ func New(triex *triex.Proxy, root thor.Bytes32) *State {
 // Spawn create a new state object shares current state's underlying db.
 // Also errors will be reported to current state.
 func (s *State) Spawn(root thor.Bytes32) *State {
-	newState := New(s.triex, root)
+	newState := New(s.triex, root, s.blockNum)
 	newState.setError = s.setError
 	return newState
 }
@@ -120,9 +122,9 @@ func (s *State) getCachedObject(addr thor.Address) *cachedObject {
 	a, err := loadAccount(s.trie, addr)
 	if err != nil {
 		s.setError(err)
-		return newCachedObject(s.triex, emptyAccount())
+		return newCachedObject(s.triex, emptyAccount(), s.blockNum)
 	}
-	co := newCachedObject(s.triex, a)
+	co := newCachedObject(s.triex, a, s.blockNum)
 	s.cache[addr] = co
 	return co
 }
@@ -347,7 +349,7 @@ func (s *State) RevertTo(revision int) {
 func (s *State) BuildStorageTrie(addr thor.Address) (triex.Trie, error) {
 	acc := s.getAccount(addr)
 
-	trie := s.triex.NewTrie(thor.BytesToBytes32(acc.StorageRoot), 1, true)
+	trie := s.triex.NewTrie(thor.BytesToBytes32(acc.StorageRoot), s.blockNum, true)
 	// traverse journal to filter out storage changes for addr
 	s.sm.Journal(func(k, v interface{}) bool {
 		switch key := k.(type) {
@@ -377,7 +379,7 @@ func (s *State) Stage() *Stage {
 	if s.err != nil {
 		return &Stage{err: s.err}
 	}
-	return newStage(s.triex, s.root, changes)
+	return newStage(s.triex, s.root, changes, s.blockNum)
 }
 
 type (

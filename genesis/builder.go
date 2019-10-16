@@ -80,7 +80,7 @@ func (b *Builder) ComputeID() (thor.Bytes32, error) {
 
 // Build build genesis block according to presets.
 func (b *Builder) Build(triex *triex.Proxy) (blk *block.Block, events tx.Events, err error) {
-	state := state.New(triex, thor.Bytes32{})
+	state := state.New(triex, thor.Bytes32{}, math.MaxUint32)
 
 	for _, proc := range b.stateProcs {
 		if err := proc(state); err != nil {
