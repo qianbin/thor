@@ -14,7 +14,7 @@ func (g genr) ProxyGetter(get getFunc) getFunc {
 			keyBuf := keyBufPool.Get().([]byte)
 			val, err := get(g.makeKey(keyBuf, key, i))
 			keyBufPool.Put(keyBuf)
-			if i == math.MaxUint16 {
+			if i == (math.MaxUint32 / 100000) {
 				return val, err
 			}
 			if err == nil {
