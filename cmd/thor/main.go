@@ -12,6 +12,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/keystore"
@@ -26,6 +27,7 @@ import (
 	"github.com/vechain/thor/chain"
 	"github.com/vechain/thor/cmd/thor/node"
 	"github.com/vechain/thor/cmd/thor/solo"
+	"github.com/vechain/thor/co"
 	"github.com/vechain/thor/genesis"
 	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/logdb"
@@ -128,13 +130,18 @@ func main() {
 }
 
 func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
-
-	gen := uint32(0)
 	go func() {
-		bb := thor.NewBigBloom(256, 3)
+
+		var (
+			gen       = uint32(0)
+			goes      co.Goes
+			bloom     = thor.NewBigBloom(256, 3)
+			bloomLock sync.Mutex
+		)
+
 		for {
 			for {
-				if chain.BestBlock().Header().Number()/100000 >= gen+2 {
+				if chain.BestBlock().Header().Number() >= (gen+1)*100000+50 {
 					break
 				}
 				time.Sleep(time.Second)
@@ -144,10 +151,6 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 			gen++
 
 			fmt.Printf("Pruner: start [%v, %v]\n", n1, n2)
-
-			indexTrieEntries := 0
-			accountTrieEntries := 0
-			storageTrieEntries := 0
 
 			var prefix []byte
 			// index trie
@@ -169,7 +172,8 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 			if err != nil {
 				panic(err)
 			}
-			{
+			goes.Go(func() {
+				indexTrieEntries := 0
 				it1, err := triex.NewTrie(root1, n1, false).NodeIterator(nil)
 				if err != nil {
 					panic(err)
@@ -182,17 +186,23 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 				for it.Next(true) {
 					if h := it.Hash(); !h.IsZero() {
 						indexTrieEntries++
-						bb.Add(h)
+						bloomLock.Lock()
+						bloom.Add(h)
+						bloomLock.Unlock()
 					}
 				}
 				if err := it.Error(); err != nil {
 					panic(err)
 				}
 				fmt.Println("Pruner: index trie entries", indexTrieEntries)
-			}
+			})
 
 			// accounts
-			{
+			goes.Go(func() {
+
+				accountTrieEntries := 0
+				storageTrieEntries := 0
+
 				tr1 := triex.NewTrie(h1.StateRoot(), n1, false)
 				it1, err := tr1.NodeIterator(nil)
 				if err != nil {
@@ -209,7 +219,9 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 				it, _ := trie.NewDifferenceIterator(it1, it2)
 				for it.Next(true) {
 					if h := it.Hash(); !h.IsZero() {
-						bb.Add(h)
+						bloomLock.Lock()
+						bloom.Add(h)
+						bloomLock.Unlock()
 						accountTrieEntries++
 					}
 					if it.Leaf() {
@@ -245,7 +257,9 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 							for sit.Next(true) {
 								if h := sit.Hash(); !h.IsZero() {
 									storageTrieEntries++
-									bb.Add(h)
+									bloomLock.Lock()
+									bloom.Add(h)
+									bloomLock.Unlock()
 								}
 							}
 							if err := sit.Error(); err != nil {
@@ -259,6 +273,14 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 				}
 				fmt.Println("Pruner: account trie entries", accountTrieEntries)
 				fmt.Println("Pruner: storage trie entries", storageTrieEntries)
+			})
+			goes.Wait()
+
+			for {
+				if chain.BestBlock().Header().Number() >= (gen+1)*100000+65536+50 {
+					break
+				}
+				time.Sleep(time.Second)
 			}
 
 			fmt.Printf("Pruner: deleting prefix %x...\n", prefix)
@@ -271,7 +293,7 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 			for rawIt.Next() {
 				scaned++
 				k := rawIt.Key()
-				if !bb.Test(thor.BytesToBytes32(k[prefixLen:])) {
+				if !bloom.Test(thor.BytesToBytes32(k[prefixLen:])) {
 					rawDB.Delete(k)
 					deleted++
 				}
