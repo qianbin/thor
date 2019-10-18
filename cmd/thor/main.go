@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -138,16 +139,20 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 			bloom     = thor.NewBigBloom(256, 3)
 			bloomLock sync.Mutex
 		)
-
+		kk, err := triex.GetArbitrary([]byte("pruned"))
+		if err != nil {
+			kk = make([]byte, 4)
+		}
+		gen = binary.BigEndian.Uint32(kk)
 		for {
 			for {
-				if chain.BestBlock().Header().Number() >= (gen+1)*100000+50 {
+				if chain.BestBlock().Header().Number() >= (gen+1)<<16+50 {
 					break
 				}
 				time.Sleep(time.Second)
 			}
-			n1 := gen * 100000
-			n2 := (gen + 1) * 100000
+			n1 := gen << 16
+			n2 := (gen + 1) << 16
 			gen++
 
 			fmt.Printf("Pruner: start [%v, %v]\n", n1, n2)
@@ -277,7 +282,7 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 			goes.Wait()
 
 			for {
-				if chain.BestBlock().Header().Number() >= (gen+1)*100000+65536+50 {
+				if chain.BestBlock().Header().Number() >= (gen)<<16+65536+50 {
 					break
 				}
 				time.Sleep(time.Second)
@@ -290,13 +295,19 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 			prefixLen := len(prefix)
 
 			rawIt := rawDB.NewIterator(rng)
+			var tempKey [1 + 2 + 32]byte
 			for rawIt.Next() {
 				scaned++
 				k := rawIt.Key()
-				if !bloom.Test(thor.BytesToBytes32(k[prefixLen:])) {
-					rawDB.Delete(k)
+				if bloom.Test(thor.BytesToBytes32(k[prefixLen:])) {
+					copy(tempKey[:], k)
+					tempKey[1] = 255
+					tempKey[2] = 255
+					rawDB.Put(tempKey[:], rawIt.Value())
+				} else {
 					deleted++
 				}
+				rawDB.Delete(k)
 			}
 			rawIt.Release()
 
@@ -306,6 +317,9 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 				fmt.Println(err)
 			}
 			fmt.Println("Pruner: compact done")
+			var kk [4]byte
+			binary.BigEndian.PutUint32(kk[:], gen)
+			triex.PutArbitrary([]byte("pruned"), kk[:])
 		}
 	}()
 

@@ -9,18 +9,31 @@ type genr uint16
 
 func (g genr) ProxyGetter(get getFunc) getFunc {
 	return func(key []byte) ([]byte, error) {
+		val, err := g.get(get, key)
+		if err == nil {
+			return val, nil
+		}
+
+		if g == math.MaxUint16 {
+			return nil, err
+		}
+
+		val, err = genr(math.MaxUint16).get(get, key)
+		if err == nil {
+			return val, nil
+		}
+
 		i := uint16(g)
 		for {
-			keyBuf := keyBufPool.Get().([]byte)
-			val, err := get(g.makeKey(keyBuf, key, i))
-			keyBufPool.Put(keyBuf)
-			if i == (math.MaxUint32 / 100000) {
-				return val, err
+			if i == 0 {
+				return nil, err
 			}
+			i--
+
+			val, err = genr(i).get(get, key)
 			if err == nil {
 				return val, nil
 			}
-			i--
 		}
 	}
 }
@@ -32,6 +45,13 @@ func (g genr) ProxyPutter(put putFunc) putFunc {
 		keyBufPool.Put(keyBuf)
 		return err
 	}
+}
+
+func (g genr) get(get getFunc, key []byte) ([]byte, error) {
+	keyBuf := keyBufPool.Get().([]byte)
+	val, err := get(g.makeKey(keyBuf, key, uint16(g)))
+	keyBufPool.Put(keyBuf)
+	return val, err
 }
 
 func (g genr) makeKey(buf []byte, key []byte, i uint16) []byte {

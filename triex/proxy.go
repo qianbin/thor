@@ -142,8 +142,8 @@ func (p *Proxy) newTrie(root thor.Bytes32, n uint32) *nonSecureTrie {
 
 	// dual := dualTable{t1, t2}
 
-	rgen := (n - 1) / 100000
-	wgen := n / 100000
+	rgen := (n - 1) >> 16
+	wgen := n >> 16
 	getter := p.cache.ProxyGetter(
 		genr(rgen).ProxyGetter(
 			trieTable.ProxyGetter(
