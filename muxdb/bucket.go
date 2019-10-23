@@ -1,5 +1,7 @@
 package muxdb
 
+import "github.com/vechain/thor/kv"
+
 type bucket []byte
 
 func (b bucket) ProxyGet(get getFunc) getFunc {
@@ -26,7 +28,7 @@ func (b bucket) ProxyDelete(del deleteFunc) deleteFunc {
 	}
 }
 
-func (b bucket) ProxyGetter(getter Getter) Getter {
+func (b bucket) ProxyGetter(getter kv.Getter) kv.Getter {
 	return &struct {
 		getFunc
 		hasFunc
@@ -36,44 +38,13 @@ func (b bucket) ProxyGetter(getter Getter) Getter {
 	}
 }
 
-func (b bucket) ProxyPutter(putter Putter) Putter {
+func (b bucket) ProxyPutter(putter kv.Putter) kv.Putter {
 	return &struct {
 		putFunc
 		deleteFunc
 	}{
 		b.ProxyPut(putter.Put),
 		b.ProxyDelete(putter.Delete),
-	}
-}
-
-func (b bucket) ProxyKV(kv KV) KV {
-	return &struct {
-		Getter
-		Putter
-		snapshotFunc
-		batchFunc
-		iterateFunc
-		isNotFoundFunc
-	}{
-		b.ProxyGetter(kv),
-		b.ProxyPutter(kv),
-		func(fn func(Getter) error) error {
-			return kv.Snapshot(func(getter Getter) error {
-				return fn(b.ProxyGetter(getter))
-			})
-		},
-		func(fn func(Putter) error) error {
-			return kv.Batch(func(putter Putter) error {
-				return fn(b.ProxyPutter(putter))
-			})
-		},
-		func(prefix []byte, fn func([]byte, []byte) error) error {
-			bucketLen := len(b)
-			return kv.Iterate(append(b, prefix...), func(key, val []byte) error {
-				return fn(key[bucketLen:], val)
-			})
-		},
-		kv.IsNotFound,
 	}
 }
 

@@ -33,12 +33,10 @@ import (
 	"github.com/vechain/thor/co"
 	"github.com/vechain/thor/comm"
 	"github.com/vechain/thor/genesis"
-	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/logdb"
-	"github.com/vechain/thor/lvldb"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/p2psrv"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/tx"
 	"github.com/vechain/thor/txpool"
 	cli "gopkg.in/urfave/cli.v1"
@@ -129,21 +127,7 @@ func makeInstanceDir(ctx *cli.Context, gene *genesis.Genesis) string {
 	return instanceDir
 }
 
-func openChainDB(ctx *cli.Context, dataDir string) kv.GetPutCloser {
-	dir := filepath.Join(dataDir, "chain.db")
-	chainDB, err := lvldb.New(
-		dir,
-		lvldb.Options{
-			CacheSize:              256,
-			OpenFilesCacheCapacity: 64,
-		})
-	if err != nil {
-		fatal(fmt.Sprintf("open chain database [%v]: %v", dir, err))
-	}
-	return chainDB
-}
-
-func openStateDB(ctx *cli.Context, dataDir string) (kv.GetPutCloser, int) {
+func openMainDB(ctx *cli.Context, dataDir string) *muxdb.MuxDB {
 	cacheMB := normalizeCacheSize(ctx.Int(cacheFlag.Name))
 	log.Debug("cache size(MB)", "size", cacheMB)
 
@@ -157,15 +141,16 @@ func openStateDB(ctx *cli.Context, dataDir string) (kv.GetPutCloser, int) {
 	fdCache := suggestFDCache()
 	log.Debug("fd cache", "n", fdCache)
 
-	dir := filepath.Join(dataDir, "state.db")
-	stateDB, err := lvldb.New(dir, lvldb.Options{
-		CacheSize:              cacheMB / 4,
-		OpenFilesCacheCapacity: fdCache,
+	dir := filepath.Join(dataDir, "main-v2.db")
+	db, err := muxdb.New(dir, &muxdb.Options{
+		CacheSize:           cacheMB,
+		FileDescriptorCache: fdCache,
 	})
+
 	if err != nil {
 		fatal(fmt.Sprintf("open state database [%v]: %v", dir, err))
 	}
-	return stateDB, cacheMB * 3 / 4
+	return db
 }
 
 func normalizeCacheSize(sizeMB int) int {
@@ -219,13 +204,13 @@ func openLogDB(ctx *cli.Context, dataDir string) *logdb.LogDB {
 	return db
 }
 
-func initChain(gene *genesis.Genesis, chainDB kv.GetPutter, triex *triex.Proxy, logDB *logdb.LogDB) *chain.Chain {
-	genesisBlock, genesisEvents, err := gene.Build(triex)
+func initChain(gene *genesis.Genesis, db *muxdb.MuxDB, logDB *logdb.LogDB) *chain.Chain {
+	genesisBlock, genesisEvents, err := gene.Build(db)
 	if err != nil {
 		fatal("build genesis block: ", err)
 	}
 
-	chain, err := chain.New(chainDB, triex, genesisBlock)
+	chain, err := chain.New(db, genesisBlock)
 	if err != nil {
 		fatal("initialize block chain:", err)
 	}
@@ -427,8 +412,8 @@ func printStartupMessage2(
 		nodeID)
 }
 
-func openMemDB() kv.GetPutCloser {
-	db, err := lvldb.NewMem()
+func openMemDB() *muxdb.MuxDB {
+	db, err := muxdb.NewMem()
 	if err != nil {
 		fatal(fmt.Sprintf("open chain database: %v", err))
 	}

@@ -9,8 +9,8 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/triex"
 )
 
 // Account is the Thor consensus representation of an account.
@@ -62,7 +62,7 @@ func emptyAccount() *Account {
 
 // loadAccount load an account object by address in trie.
 // It returns empty account is no account found at the address.
-func loadAccount(trie triex.Trie, addr thor.Address) (*Account, error) {
+func loadAccount(trie muxdb.Trie, addr thor.Address) (*Account, error) {
 	data, err := trie.Get(addr[:])
 	if err != nil {
 		return nil, err
@@ -79,7 +79,7 @@ func loadAccount(trie triex.Trie, addr thor.Address) (*Account, error) {
 
 // saveAccount save account into trie at given address.
 // If the given account is empty, the value for given address is deleted.
-func saveAccount(trie triex.Trie, addr thor.Address, a *Account) error {
+func saveAccount(trie muxdb.Trie, addr thor.Address, a *Account) error {
 	if a.IsEmpty() {
 		// delete if account is empty
 		return trie.Update(addr[:], nil)

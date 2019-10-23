@@ -7,30 +7,31 @@ package state
 
 import (
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/triex"
 )
 
 // cachedObject to cache code and storage of an account.
 type cachedObject struct {
-	triex    *triex.Proxy
+	db       *muxdb.MuxDB
 	data     Account
 	blockNum uint32
 
 	cache struct {
 		code        []byte
-		storageTrie triex.Trie
+		storageTrie muxdb.Trie
 		storage     map[thor.Bytes32]rlp.RawValue
 	}
 }
 
-func newCachedObject(triex *triex.Proxy, data *Account, blockNum uint32) *cachedObject {
-	return &cachedObject{triex: triex, data: *data, blockNum: blockNum}
+func newCachedObject(db *muxdb.MuxDB, data *Account, blockNum uint32) *cachedObject {
+	return &cachedObject{db: db, data: *data, blockNum: blockNum}
 }
 
-func (co *cachedObject) getOrCreateStorageTrie() triex.Trie {
+func (co *cachedObject) getOrCreateStorageTrie() muxdb.Trie {
 	if co.cache.storageTrie == nil {
-		co.cache.storageTrie = co.triex.NewTrie(
+		co.cache.storageTrie = co.db.NewTrie(
+			"s",
 			thor.BytesToBytes32(co.data.StorageRoot), co.blockNum,
 			true)
 	}
@@ -73,7 +74,7 @@ func (co *cachedObject) GetCode() ([]byte, error) {
 	if len(co.data.CodeHash) > 0 {
 		// do have code
 
-		code, err := co.triex.GetPreimage(co.data.CodeHash)
+		code, err := co.db.NewStore("c/", true).Get(co.data.CodeHash)
 		if err != nil {
 			return nil, err
 		}

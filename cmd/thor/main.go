@@ -13,7 +13,6 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/keystore"
@@ -28,15 +27,13 @@ import (
 	"github.com/vechain/thor/chain"
 	"github.com/vechain/thor/cmd/thor/node"
 	"github.com/vechain/thor/cmd/thor/solo"
-	"github.com/vechain/thor/co"
 	"github.com/vechain/thor/genesis"
 	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/logdb"
-	"github.com/vechain/thor/lvldb"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/trie"
-	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/txpool"
 	"gopkg.in/cheggaaa/pb.v1"
 	cli "gopkg.in/urfave/cli.v1"
@@ -130,21 +127,22 @@ func main() {
 	}
 }
 
-func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
+func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
+	configStore := db.NewStore("config/", false)
 	go func() {
-
+		// prune index trie
 		var (
-			gen       = uint32(0)
-			goes      co.Goes
-			bloom     = thor.NewBigBloom(256, 3)
-			bloomLock sync.Mutex
+			bloom = thor.NewBigBloom(64, 3)
+			gen   = uint32(0)
 		)
-		kk, err := triex.GetArbitrary([]byte("pruned"))
-		if err != nil {
-			kk = make([]byte, 4)
+
+		v, _ := configStore.Get([]byte("index-trie-pruned"))
+		if len(v) == 4 {
+			gen = binary.BigEndian.Uint32(v)
 		}
-		gen = binary.BigEndian.Uint32(kk)
+
 		for {
+			bloom.Reset()
 			for {
 				if chain.BestBlock().Header().Number() >= (gen+1)<<16+50 {
 					break
@@ -155,9 +153,8 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 			n2 := (gen + 1) << 16
 			gen++
 
-			fmt.Printf("Pruner: start [%v, %v]\n", n1, n2)
+			fmt.Printf("I Pruner: start [%v, %v]\n", n1, n2)
 
-			var prefix []byte
 			// index trie
 
 			id1, err := chain.NewTrunk().GetBlockID(n1)
@@ -169,117 +166,214 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 				panic(err)
 			}
 
-			h1, root1, err := chain.GetBlockHeader(id1)
+			_, root1, err := chain.GetBlockHeader(id1)
 			if err != nil {
 				panic(err)
 			}
-			h2, root2, err := chain.GetBlockHeader(id2)
+			_, root2, err := chain.GetBlockHeader(id2)
 			if err != nil {
 				panic(err)
 			}
-			goes.Go(func() {
-				indexTrieEntries := 0
-				it1, err := triex.NewTrie(root1, n1, false).NodeIterator(nil)
-				if err != nil {
-					panic(err)
+
+			indexTrieEntries := 0
+			t1 := db.NewTrie("i", root1, n1, false)
+			it1, err := t1.NodeIterator(nil)
+			if err != nil {
+				panic(err)
+			}
+			it2, err := db.NewTrie("i", root2, n2, false).NodeIterator(nil)
+			if err != nil {
+				panic(err)
+			}
+			it, _ := trie.NewDifferenceIterator(it1, it2)
+			for it.Next(true) {
+				if h := it.Hash(); !h.IsZero() {
+					indexTrieEntries++
+					bloom.Add(h)
 				}
-				it2, err := triex.NewTrie(root2, n2, false).NodeIterator(nil)
-				if err != nil {
-					panic(err)
-				}
-				it, _ := trie.NewDifferenceIterator(it1, it2)
-				for it.Next(true) {
-					if h := it.Hash(); !h.IsZero() {
-						indexTrieEntries++
-						bloomLock.Lock()
-						bloom.Add(h)
-						bloomLock.Unlock()
+			}
+			if err := it.Error(); err != nil {
+				panic(err)
+			}
+			fmt.Println("I Pruner: index trie entries", indexTrieEntries)
+
+			prefix := t1.Prefix()
+
+			fmt.Printf("I Pruner: deleting prefix %x...\n", prefix)
+			scaned := 0
+			deleted := 0
+
+			prefixLen := len(prefix)
+
+			lowStore := db.LowStore()
+			var tempKey [2 + 2 + 32]byte
+
+			lowStore.Iterate(prefix, func(key, val []byte) error {
+				scaned++
+				lowStore.Batch(func(w kv.Putter) error {
+					if bloom.Test(thor.BytesToBytes32(key[prefixLen:])) {
+						copy(tempKey[:], key)
+						tempKey[2] = 255
+						tempKey[3] = 255
+						w.Put(tempKey[:], val)
+					} else {
+						deleted++
 					}
-				}
-				if err := it.Error(); err != nil {
-					panic(err)
-				}
-				fmt.Println("Pruner: index trie entries", indexTrieEntries)
+					w.Delete(key)
+					return nil
+				})
+				return nil
 			})
 
-			// accounts
-			goes.Go(func() {
+			fmt.Println("I Pruner: deleted", deleted, "/", scaned, "entries  ", float64(deleted*100)/float64(scaned), "%")
+			fmt.Println("I Pruner: do compact")
 
-				accountTrieEntries := 0
-				storageTrieEntries := 0
+			if err := lowStore.Compact(prefix); err != nil {
+				fmt.Println(err)
+			}
+			fmt.Println("I Pruner: compact done")
+			var kk [4]byte
+			binary.BigEndian.PutUint32(kk[:], gen)
+			configStore.Put([]byte("index-trie-pruned"), kk[:])
+		}
+	}()
+	go func() {
 
-				tr1 := triex.NewTrie(h1.StateRoot(), n1, false)
-				it1, err := tr1.NodeIterator(nil)
-				if err != nil {
-					panic(err)
+		var (
+			gen    = uint32(0)
+			abloom = thor.NewBigBloom(64, 3)
+			sbloom = thor.NewBigBloom(64, 3)
+		)
+
+		v, _ := configStore.Get([]byte("state-pruned"))
+		if len(v) == 4 {
+			gen = binary.BigEndian.Uint32(v)
+		}
+
+		for {
+			abloom.Reset()
+			sbloom.Reset()
+			for {
+				if chain.BestBlock().Header().Number() >= (gen+1)<<16+50 {
+					break
 				}
-				tr2 := triex.NewTrie(h2.StateRoot(), n2, false)
-				it2, err := tr2.NodeIterator(nil)
-				if err != nil {
-					panic(err)
+				time.Sleep(time.Second)
+			}
+			n1 := gen << 16
+			n2 := (gen + 1) << 16
+			gen++
+
+			fmt.Printf("A Pruner: start [%v, %v]\n", n1, n2)
+
+			h1, err := chain.NewTrunk().GetBlockHeader(n1)
+			if err != nil {
+				panic(err)
+			}
+			h2, err := chain.NewTrunk().GetBlockHeader(n2)
+			if err != nil {
+				panic(err)
+			}
+
+			accountTrieEntries := 0
+			storageTrieEntries := 0
+
+			tr1 := db.NewTrie("a", h1.StateRoot(), n1, false)
+			it1, err := tr1.NodeIterator(nil)
+			if err != nil {
+				panic(err)
+			}
+			tr2 := db.NewTrie("a", h2.StateRoot(), n2, false)
+			it2, err := tr2.NodeIterator(nil)
+			if err != nil {
+				panic(err)
+			}
+
+			it, _ := trie.NewDifferenceIterator(it1, it2)
+			for it.Next(true) {
+				if h := it.Hash(); !h.IsZero() {
+					abloom.Add(h)
+					accountTrieEntries++
 				}
-
-				prefix = tr1.Prefix()
-
-				it, _ := trie.NewDifferenceIterator(it1, it2)
-				for it.Next(true) {
-					if h := it.Hash(); !h.IsZero() {
-						bloomLock.Lock()
-						bloom.Add(h)
-						bloomLock.Unlock()
-						accountTrieEntries++
+				if it.Leaf() {
+					blob2 := it.LeafBlob()
+					var acc2 state.Account
+					if err := rlp.DecodeBytes(blob2, &acc2); err != nil {
+						panic(err)
 					}
-					if it.Leaf() {
-						blob2 := it.LeafBlob()
-						var acc2 state.Account
-						if err := rlp.DecodeBytes(blob2, &acc2); err != nil {
+
+					if len(acc2.StorageRoot) > 0 {
+						sroot2 := thor.BytesToBytes32(acc2.StorageRoot)
+						blob1, err := tr1.Get(it.LeafKey())
+						if err != nil {
 							panic(err)
 						}
-
-						if len(acc2.StorageRoot) > 0 {
-							sroot2 := thor.BytesToBytes32(acc2.StorageRoot)
-							blob1, err := tr1.Get(it.LeafKey())
-							if err != nil {
+						var sroot1 thor.Bytes32
+						if len(blob1) > 0 {
+							var acc1 state.Account
+							if err := rlp.DecodeBytes(blob1, &acc1); err != nil {
 								panic(err)
 							}
-							var sroot1 thor.Bytes32
-							if len(blob1) > 0 {
-								var acc1 state.Account
-								if err := rlp.DecodeBytes(blob1, &acc1); err != nil {
-									panic(err)
-								}
-								sroot1 = thor.BytesToBytes32(acc1.StorageRoot)
+							sroot1 = thor.BytesToBytes32(acc1.StorageRoot)
+						}
+						sit1, err := db.NewTrie("s", sroot1, n1, false).NodeIterator(nil)
+						if err != nil {
+							panic(err)
+						}
+						sit2, err := db.NewTrie("s", sroot2, n2, false).NodeIterator(nil)
+						if err != nil {
+							panic(err)
+						}
+						sit, _ := trie.NewDifferenceIterator(sit1, sit2)
+						for sit.Next(true) {
+							if h := sit.Hash(); !h.IsZero() {
+								storageTrieEntries++
+								sbloom.Add(h)
 							}
-							sit1, err := triex.NewTrie(sroot1, n1, false).NodeIterator(nil)
-							if err != nil {
-								panic(err)
-							}
-							sit2, err := triex.NewTrie(sroot2, n2, false).NodeIterator(nil)
-							if err != nil {
-								panic(err)
-							}
-							sit, _ := trie.NewDifferenceIterator(sit1, sit2)
-							for sit.Next(true) {
-								if h := sit.Hash(); !h.IsZero() {
-									storageTrieEntries++
-									bloomLock.Lock()
-									bloom.Add(h)
-									bloomLock.Unlock()
-								}
-							}
-							if err := sit.Error(); err != nil {
-								panic(err)
-							}
+						}
+						if err := sit.Error(); err != nil {
+							panic(err)
 						}
 					}
 				}
-				if err := it.Error(); err != nil {
-					panic(err)
-				}
-				fmt.Println("Pruner: account trie entries", accountTrieEntries)
-				fmt.Println("Pruner: storage trie entries", storageTrieEntries)
+			}
+			if err := it.Error(); err != nil {
+				panic(err)
+			}
+			fmt.Println("A Pruner: account trie entries", accountTrieEntries)
+			fmt.Println("A Pruner: storage trie entries", storageTrieEntries)
+
+			lowStore := db.LowStore()
+
+			sprefix := db.NewTrie("s", thor.Bytes32{}, n1, false).Prefix()
+			sprefixLen := len(sprefix)
+			var tempKey [2 + 2 + 32]byte
+			fmt.Printf("A Pruner: deleting prefix %x...\n", sprefix)
+			sscaned := 0
+			sdeleted := 0
+			lowStore.Iterate(sprefix, func(key, val []byte) error {
+				sscaned++
+				lowStore.Batch(func(w kv.Putter) error {
+					if sbloom.Test(thor.BytesToBytes32(key[sprefixLen:])) {
+						copy(tempKey[:], key)
+						tempKey[2] = 255
+						tempKey[3] = 255
+						w.Put(tempKey[:], val)
+					} else {
+						sdeleted++
+					}
+					w.Delete(key)
+					return nil
+				})
+				return nil
 			})
-			goes.Wait()
+
+			fmt.Println("A Pruner: storage deleted", sdeleted, "/", sscaned, "entries  ", float64(sdeleted*100)/float64(sscaned), "%")
+			fmt.Println("A Pruner: storage do compact")
+
+			if err := lowStore.Compact(sprefix); err != nil {
+				fmt.Println(err)
+			}
+			fmt.Println("A Pruner: storage compact done")
 
 			for {
 				if chain.BestBlock().Header().Number() >= (gen)<<16+65536+50 {
@@ -288,38 +382,41 @@ func prune(triex *triex.Proxy, rawDB kv.GetPutter, chain *chain.Chain) error {
 				time.Sleep(time.Second)
 			}
 
-			fmt.Printf("Pruner: deleting prefix %x...\n", prefix)
-			scaned := 0
-			deleted := 0
-			rng := *kv.NewRangeWithBytesPrefix(prefix)
-			prefixLen := len(prefix)
+			aprefix := db.NewTrie("s", thor.Bytes32{}, n1, false).Prefix()
 
-			rawIt := rawDB.NewIterator(rng)
-			var tempKey [1 + 2 + 32]byte
-			for rawIt.Next() {
-				scaned++
-				k := rawIt.Key()
-				if bloom.Test(thor.BytesToBytes32(k[prefixLen:])) {
-					copy(tempKey[:], k)
-					tempKey[1] = 255
-					tempKey[2] = 255
-					rawDB.Put(tempKey[:], rawIt.Value())
-				} else {
-					deleted++
-				}
-				rawDB.Delete(k)
-			}
-			rawIt.Release()
+			fmt.Printf("A Pruner: deleting prefix %x...\n", aprefix)
+			ascaned := 0
+			adeleted := 0
 
-			fmt.Println("Pruner: deleted", deleted, "/", scaned, "entries")
-			fmt.Println("Pruner: do compact")
-			if err := rawDB.(*lvldb.LevelDB).CompactRange(rng); err != nil {
+			aprefixLen := len(aprefix)
+
+			lowStore.Iterate(aprefix, func(key, val []byte) error {
+				ascaned++
+				lowStore.Batch(func(w kv.Putter) error {
+					if abloom.Test(thor.BytesToBytes32(key[aprefixLen:])) {
+						copy(tempKey[:], key)
+						tempKey[2] = 255
+						tempKey[3] = 255
+						w.Put(tempKey[:], val)
+					} else {
+						adeleted++
+					}
+					w.Delete(key)
+					return nil
+				})
+				return nil
+			})
+
+			fmt.Println("A Pruner: account deleted", adeleted, "/", ascaned, "entries  ", float64(adeleted*100)/float64(ascaned), "%")
+			fmt.Println("A Pruner: account do compact")
+
+			if err := lowStore.Compact(aprefix); err != nil {
 				fmt.Println(err)
 			}
-			fmt.Println("Pruner: compact done")
+			fmt.Println("A Pruner: account compact done")
 			var kk [4]byte
 			binary.BigEndian.PutUint32(kk[:], gen)
-			triex.PutArbitrary([]byte("pruned"), kk[:])
+			configStore.Put([]byte("state-pruned"), kk[:])
 		}
 	}()
 
@@ -335,11 +432,8 @@ func defaultAction(ctx *cli.Context) error {
 	gene, forkConfig := selectGenesis(ctx)
 	instanceDir := makeInstanceDir(ctx, gene)
 
-	chainDB := openChainDB(ctx, instanceDir)
-	defer func() { log.Info("closing chain database..."); chainDB.Close() }()
-
-	stateDB, trieCacheSizeMB := openStateDB(ctx, instanceDir)
-	defer func() { log.Info("closing state database..."); stateDB.Close() }()
+	mainDB := openMainDB(ctx, instanceDir)
+	defer func() { log.Info("closing main database..."); mainDB.Close() }()
 
 	// f := func(p byte) {
 	// 	n := 0
@@ -362,9 +456,7 @@ func defaultAction(ctx *cli.Context) error {
 	logDB := openLogDB(ctx, instanceDir)
 	defer func() { log.Info("closing log database..."); logDB.Close() }()
 
-	triex := triex.New(stateDB, trieCacheSizeMB)
-
-	chain := initChain(gene, chainDB, triex, logDB)
+	chain := initChain(gene, mainDB, logDB)
 
 	// _, indexRoot, _ := chain.GetBlockHeader(chain.BestBlock().Header().ID())
 
@@ -380,7 +472,8 @@ func defaultAction(ctx *cli.Context) error {
 
 	// fmt.Println(n)
 	// return nil
-	prune(triex, stateDB, chain)
+	// prune(triex, stateDB, chain)
+	prune(mainDB, chain)
 
 	master := loadNodeMaster(ctx)
 
@@ -392,13 +485,13 @@ func defaultAction(ctx *cli.Context) error {
 		}
 	}
 
-	txPool := txpool.New(chain, triex, defaultTxPoolOptions)
+	txPool := txpool.New(chain, mainDB, defaultTxPoolOptions)
 	defer func() { log.Info("closing tx pool..."); txPool.Close() }()
 
 	p2pcom := newP2PComm(ctx, chain, txPool, instanceDir)
 	apiHandler, apiCloser := api.New(
 		chain,
-		triex,
+		mainDB,
 		txPool,
 		logDB,
 		p2pcom.comm,
@@ -421,7 +514,7 @@ func defaultAction(ctx *cli.Context) error {
 	return node.New(
 		master,
 		chain,
-		triex,
+		mainDB,
 		logDB,
 		txPool,
 		filepath.Join(instanceDir, "tx.stash"),
@@ -442,42 +535,35 @@ func soloAction(ctx *cli.Context) error {
 	forkConfig := thor.ForkConfig{}
 
 	var (
-		chainDB         kv.GetPutCloser
-		stateDB         kv.GetPutCloser
-		trieCacheSizeMB int
-		logDB           *logdb.LogDB
-		instanceDir     string
+		mainDB      *muxdb.MuxDB
+		logDB       *logdb.LogDB
+		instanceDir string
 	)
 
 	if ctx.Bool("persist") {
 		instanceDir = makeInstanceDir(ctx, gene)
-		chainDB = openChainDB(ctx, instanceDir)
-		stateDB, trieCacheSizeMB = openStateDB(ctx, instanceDir)
+		mainDB = openMainDB(ctx, instanceDir)
 		logDB = openLogDB(ctx, instanceDir)
 	} else {
 		instanceDir = "Memory"
-		chainDB = openMemDB()
-		stateDB = openMemDB()
+		mainDB = openMemDB()
 		logDB = openMemLogDB()
 	}
 
-	defer func() { log.Info("closing chain database..."); chainDB.Close() }()
-	defer func() { log.Info("closing state database..."); stateDB.Close() }()
+	defer func() { log.Info("closing main database..."); mainDB.Close() }()
 	defer func() { log.Info("closing log database..."); logDB.Close() }()
 
-	triex := triex.New(stateDB, trieCacheSizeMB)
-
-	chain := initChain(gene, chainDB, triex, logDB)
+	chain := initChain(gene, mainDB, logDB)
 	if err := syncLogDB(exitSignal, chain, logDB, ctx.Bool(verifyLogsFlag.Name)); err != nil {
 		return err
 	}
 
-	txPool := txpool.New(chain, triex, defaultTxPoolOptions)
+	txPool := txpool.New(chain, mainDB, defaultTxPoolOptions)
 	defer func() { log.Info("closing tx pool..."); txPool.Close() }()
 
 	apiHandler, apiCloser := api.New(
 		chain,
-		triex,
+		mainDB,
 		txPool,
 		logDB,
 		solo.Communicator{},
@@ -495,7 +581,7 @@ func soloAction(ctx *cli.Context) error {
 	printSoloStartupMessage(gene, chain, instanceDir, apiURL, forkConfig)
 
 	return solo.New(chain,
-		triex,
+		mainDB,
 		logDB,
 		txPool,
 		uint64(ctx.Int("gas-limit")),

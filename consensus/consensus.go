@@ -11,10 +11,10 @@ import (
 	"github.com/vechain/thor/block"
 	"github.com/vechain/thor/builtin"
 	"github.com/vechain/thor/chain"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/runtime"
 	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/tx"
 	"github.com/vechain/thor/xenv"
 )
@@ -23,16 +23,16 @@ import (
 // and predicate which trunk it belong to.
 type Consensus struct {
 	chain                *chain.Chain
-	triex                *triex.Proxy
+	db                   *muxdb.MuxDB
 	forkConfig           thor.ForkConfig
 	correctReceiptsRoots map[string]string
 }
 
 // New create a Consensus instance.
-func New(chain *chain.Chain, triex *triex.Proxy, forkConfig thor.ForkConfig) *Consensus {
+func New(chain *chain.Chain, db *muxdb.MuxDB, forkConfig thor.ForkConfig) *Consensus {
 	return &Consensus{
 		chain:                chain,
-		triex:                triex,
+		db:                   db,
 		forkConfig:           forkConfig,
 		correctReceiptsRoots: thor.LoadCorrectReceiptsRoots(),
 	}
@@ -58,7 +58,7 @@ func (c *Consensus) Process(blk *block.Block, nowTimestamp uint64) (*state.Stage
 		return nil, nil, errParentMissing
 	}
 
-	state := state.New(c.triex, parentHeader.StateRoot(), parentHeader.Number())
+	state := state.New(c.db, parentHeader.StateRoot(), parentHeader.Number())
 
 	vip191 := c.forkConfig.VIP191
 	if vip191 == 0 {
@@ -98,7 +98,7 @@ func (c *Consensus) NewRuntimeForReplay(header *block.Header, skipPoA bool) (*ru
 		}
 		return nil, errParentMissing
 	}
-	state := state.New(c.triex, parentHeader.StateRoot(), parentHeader.Number())
+	state := state.New(c.db, parentHeader.StateRoot(), parentHeader.Number())
 
 	if !skipPoA {
 		if err := c.validateProposer(header, parentHeader, state); err != nil {

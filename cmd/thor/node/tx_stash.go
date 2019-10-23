@@ -10,7 +10,8 @@ import (
 	"container/list"
 
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/vechain/thor/kv"
+	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/syndtr/goleveldb/leveldb/util"
 	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/tx"
 )
@@ -18,17 +19,17 @@ import (
 // to stash non-executable txs.
 // it uses a FIFO queue to limit the size of stash.
 type txStash struct {
-	kv      kv.GetPutter
+	db      *leveldb.DB
 	fifo    *list.List
 	maxSize int
 }
 
-func newTxStash(kv kv.GetPutter, maxSize int) *txStash {
-	return &txStash{kv, list.New(), maxSize}
+func newTxStash(db *leveldb.DB, maxSize int) *txStash {
+	return &txStash{db, list.New(), maxSize}
 }
 
 func (ts *txStash) Save(tx *tx.Transaction) error {
-	has, err := ts.kv.Has(tx.Hash().Bytes())
+	has, err := ts.db.Has(tx.Hash().Bytes(), nil)
 	if err != nil {
 		return err
 	}
@@ -41,13 +42,13 @@ func (ts *txStash) Save(tx *tx.Transaction) error {
 		return err
 	}
 
-	if err := ts.kv.Put(tx.Hash().Bytes(), data); err != nil {
+	if err := ts.db.Put(tx.Hash().Bytes(), data, nil); err != nil {
 		return err
 	}
 	ts.fifo.PushBack(tx.Hash())
 	for ts.fifo.Len() > ts.maxSize {
 		keyToDelete := ts.fifo.Remove(ts.fifo.Front()).(thor.Bytes32).Bytes()
-		if err := ts.kv.Delete(keyToDelete); err != nil {
+		if err := ts.db.Delete(keyToDelete, nil); err != nil {
 			return err
 		}
 	}
@@ -55,14 +56,16 @@ func (ts *txStash) Save(tx *tx.Transaction) error {
 }
 
 func (ts *txStash) LoadAll() tx.Transactions {
-	batch := ts.kv.NewBatch()
+	batch := &leveldb.Batch{}
 	var txs tx.Transactions
-	iter := ts.kv.NewIterator(*kv.NewRangeWithBytesPrefix(nil))
+
+	iter := ts.db.NewIterator(util.BytesPrefix(nil), nil)
+	defer iter.Release()
 	for iter.Next() {
 		var tx tx.Transaction
 		if err := rlp.DecodeBytes(iter.Value(), &tx); err != nil {
 			log.Warn("decode stashed tx", "err", err)
-			if err := ts.kv.Delete(iter.Key()); err != nil {
+			if err := ts.db.Delete(iter.Key(), nil); err != nil {
 				log.Warn("delete corrupted stashed tx", "err", err)
 			}
 		} else {
@@ -78,7 +81,7 @@ func (ts *txStash) LoadAll() tx.Transactions {
 		}
 	}
 
-	if err := batch.Write(); err != nil {
+	if err := ts.db.Write(batch, nil); err != nil {
 		log.Warn("remap stashed txs", "err", err)
 	}
 	return txs

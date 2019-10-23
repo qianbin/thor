@@ -4,6 +4,8 @@ import "math"
 
 type segment uint16
 
+var archiveSegment = segment(math.MaxUint16)
+
 func (s segment) ProxyGet(get getFunc) getFunc {
 	return func(key []byte) ([]byte, error) {
 		val, err := get(s.makeKey(key))
@@ -14,7 +16,7 @@ func (s segment) ProxyGet(get getFunc) getFunc {
 			return nil, err
 		}
 
-		val, err = get(segment(math.MaxUint16).makeKey(key))
+		val, err = get(archiveSegment.makeKey(key))
 		if err == nil {
 			return val, nil
 		}

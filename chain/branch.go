@@ -10,32 +10,30 @@ import (
 
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/vechain/thor/block"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/tx"
 )
 
 type Branch struct {
-	chain        *Chain
-	headID       thor.Bytes32
-	getIndexTrie func() (triex.Trie, error)
+	chain     *Chain
+	headID    thor.Bytes32
+	indexTrie muxdb.Trie
+	err       error
 }
 
 func newBranch(chain *Chain, headID thor.Bytes32) *Branch {
-	var indexTrie triex.Trie
+	_, indexRoot, err := chain.GetBlockHeader(headID)
+	if err != nil {
+		return &Branch{err: err}
+	}
+
 	return &Branch{
 		chain,
 		headID,
-		func() (triex.Trie, error) {
-			if indexTrie == nil {
-				_, indexRoot, err := chain.GetBlockHeader(headID)
-				if err != nil {
-					return nil, err
-				}
-				indexTrie = chain.triex.NewTrie(indexRoot, block.Number(headID), false)
-			}
-			return indexTrie, nil
-		}}
+		chain.db.NewTrie("i", indexRoot, block.Number(headID), false),
+		nil,
+	}
 }
 
 func (b *Branch) HeadID() thor.Bytes32 {
@@ -43,13 +41,12 @@ func (b *Branch) HeadID() thor.Bytes32 {
 }
 
 func (b *Branch) GetBlockID(num uint32) (thor.Bytes32, error) {
-	trie, err := b.getIndexTrie()
-	if err != nil {
-		return thor.Bytes32{}, err
+	if b.err != nil {
+		return thor.Bytes32{}, b.err
 	}
 	var key [4]byte
 	binary.BigEndian.PutUint32(key[:], num)
-	data, err := trie.Get(key[:])
+	data, err := b.indexTrie.Get(key[:])
 	if err != nil {
 		return thor.Bytes32{}, err
 	}
@@ -60,12 +57,11 @@ func (b *Branch) GetBlockID(num uint32) (thor.Bytes32, error) {
 }
 
 func (b *Branch) GetTransactionMeta(id thor.Bytes32) (*TxMeta, error) {
-	trie, err := b.getIndexTrie()
-	if err != nil {
-		return nil, err
+	if b.err != nil {
+		return nil, b.err
 	}
 
-	enc, err := trie.Get(id[:])
+	enc, err := b.indexTrie.Get(id[:])
 	if err != nil {
 		return nil, err
 	}
@@ -168,8 +164,8 @@ type txLocation struct {
 	Reverted    bool
 }
 
-func indexBlock(triex *triex.Proxy, indexRoot thor.Bytes32, block *block.Block, receipts tx.Receipts) (thor.Bytes32, error) {
-	trie := triex.NewTrie(indexRoot, block.Header().Number()-1, false)
+func (c *Chain) indexBlock(indexRoot thor.Bytes32, block *block.Block, receipts tx.Receipts) (thor.Bytes32, error) {
+	trie := c.db.NewTrie("i", indexRoot, block.Header().Number()-1, false)
 	id := block.Header().ID()
 
 	// map block number to block ID

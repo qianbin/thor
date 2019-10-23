@@ -26,15 +26,15 @@ import (
 	"github.com/vechain/thor/api/transferslegacy"
 	"github.com/vechain/thor/chain"
 	"github.com/vechain/thor/logdb"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/txpool"
 )
 
 //New return api router
 func New(
 	chain *chain.Chain,
-	triex *triex.Proxy,
+	db *muxdb.MuxDB,
 	txPool *txpool.TxPool,
 	logDB *logdb.LogDB,
 	nw node.Network,
@@ -67,7 +67,7 @@ func New(
 			http.Redirect(w, req, "doc/swagger-ui/", http.StatusTemporaryRedirect)
 		})
 
-	accounts.New(chain, triex, callGasLimit, forkConfig).
+	accounts.New(chain, db, callGasLimit, forkConfig).
 		Mount(router, "/accounts")
 
 	if !skipLogs {
@@ -88,7 +88,7 @@ func New(
 		Mount(router, "/blocks")
 	transactions.New(chain, txPool).
 		Mount(router, "/transactions")
-	debug.New(chain, triex, forkConfig).
+	debug.New(chain, db, forkConfig).
 		Mount(router, "/debug")
 	node.New(nw).
 		Mount(router, "/node")

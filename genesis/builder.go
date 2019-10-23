@@ -10,11 +10,10 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/vechain/thor/block"
-	"github.com/vechain/thor/lvldb"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/runtime"
 	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/tx"
 	"github.com/vechain/thor/xenv"
 )
@@ -66,12 +65,12 @@ func (b *Builder) ExtraData(data [28]byte) *Builder {
 
 // ComputeID compute genesis ID.
 func (b *Builder) ComputeID() (thor.Bytes32, error) {
-	kv, err := lvldb.NewMem()
+	mem, err := muxdb.NewMem()
 	if err != nil {
 		return thor.Bytes32{}, err
 	}
 
-	blk, _, err := b.Build(triex.New(kv, 0))
+	blk, _, err := b.Build(mem)
 	if err != nil {
 		return thor.Bytes32{}, err
 	}
@@ -79,8 +78,8 @@ func (b *Builder) ComputeID() (thor.Bytes32, error) {
 }
 
 // Build build genesis block according to presets.
-func (b *Builder) Build(triex *triex.Proxy) (blk *block.Block, events tx.Events, err error) {
-	state := state.New(triex, thor.Bytes32{}, math.MaxUint32)
+func (b *Builder) Build(db *muxdb.MuxDB) (blk *block.Block, events tx.Events, err error) {
+	state := state.New(db, thor.Bytes32{}, math.MaxUint32)
 
 	for _, proc := range b.stateProcs {
 		if err := proc(state); err != nil {

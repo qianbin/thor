@@ -6,18 +6,19 @@
 package state
 
 import (
+	"github.com/vechain/thor/kv"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/triex"
 )
 
 // Stage abstracts changes on the main accounts trie.
 type Stage struct {
-	err   error
-	triex *triex.Proxy
+	err error
 
-	accountTrie  triex.Trie
-	storageTries []triex.Trie
+	accountTrie  muxdb.Trie
+	storageTries []muxdb.Trie
 	codes        []codeWithHash
+	codeStore    kv.Store
 }
 
 type codeWithHash struct {
@@ -25,11 +26,11 @@ type codeWithHash struct {
 	hash []byte
 }
 
-func newStage(trieProxy *triex.Proxy, root thor.Bytes32, changes map[thor.Address]*changedObject, blockNum uint32) *Stage {
+func newStage(db *muxdb.MuxDB, root thor.Bytes32, changes map[thor.Address]*changedObject, blockNum uint32) *Stage {
 
-	accountTrie := trieProxy.NewTrie(root, blockNum, true)
+	accountTrie := db.NewTrie("a", root, blockNum, true)
 
-	storageTries := make([]triex.Trie, 0, len(changes))
+	storageTries := make([]muxdb.Trie, 0, len(changes))
 	codes := make([]codeWithHash, 0, len(changes))
 
 	for addr, obj := range changes {
@@ -44,7 +45,7 @@ func newStage(trieProxy *triex.Proxy, root thor.Bytes32, changes map[thor.Addres
 		// skip storage changes if account is empty
 		if !dataCpy.IsEmpty() {
 			if len(obj.storage) > 0 {
-				strie := trieProxy.NewTrie(thor.BytesToBytes32(dataCpy.StorageRoot), blockNum, true)
+				strie := db.NewTrie("s", thor.BytesToBytes32(dataCpy.StorageRoot), blockNum, true)
 				storageTries = append(storageTries, strie)
 				for k, v := range obj.storage {
 					if err := strie.Update(k[:], v); err != nil {
@@ -64,10 +65,10 @@ func newStage(trieProxy *triex.Proxy, root thor.Bytes32, changes map[thor.Addres
 		}
 	}
 	return &Stage{
-		triex:        trieProxy,
 		accountTrie:  accountTrie,
 		storageTries: storageTries,
 		codes:        codes,
+		codeStore:    db.NewStore("c/", true),
 	}
 }
 
@@ -86,10 +87,15 @@ func (s *Stage) Commit() (thor.Bytes32, error) {
 	}
 
 	// write codes
-	for _, code := range s.codes {
-		if err := s.triex.PutPreimage(code.hash, code.code); err != nil {
-			return thor.Bytes32{}, err
+	if err := s.codeStore.Batch(func(w kv.Putter) error {
+		for _, code := range s.codes {
+			if err := w.Put(code.hash, code.code); err != nil {
+				return err
+			}
 		}
+		return nil
+	}); err != nil {
+		return thor.Bytes32{}, err
 	}
 
 	// commit storage tries

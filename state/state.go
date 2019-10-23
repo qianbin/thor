@@ -12,16 +12,16 @@ import (
 
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/stackedmap"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/triex"
 )
 
 // State manages the main accounts trie.
 type State struct {
-	triex    *triex.Proxy
+	db       *muxdb.MuxDB
 	root     thor.Bytes32                   // root of initial accounts trie
-	trie     triex.Trie                     // the accounts trie
+	trie     muxdb.Trie                     // the accounts trie
 	cache    map[thor.Address]*cachedObject // cache of accounts trie
 	sm       *stackedmap.StackedMap         // keeps revisions of accounts state
 	err      error
@@ -30,11 +30,11 @@ type State struct {
 }
 
 // New create an state object.
-func New(triex *triex.Proxy, root thor.Bytes32, blockNum uint32) *State {
+func New(db *muxdb.MuxDB, root thor.Bytes32, blockNum uint32) *State {
 	state := State{
-		triex:    triex,
+		db:       db,
 		root:     root,
-		trie:     triex.NewTrie(root, blockNum, true),
+		trie:     db.NewTrie("a", root, blockNum, true),
 		cache:    make(map[thor.Address]*cachedObject),
 		blockNum: blockNum,
 	}
@@ -52,7 +52,7 @@ func New(triex *triex.Proxy, root thor.Bytes32, blockNum uint32) *State {
 // Spawn create a new state object shares current state's underlying db.
 // Also errors will be reported to current state.
 func (s *State) Spawn(root thor.Bytes32) *State {
-	newState := New(s.triex, root, s.blockNum)
+	newState := New(s.db, root, s.blockNum)
 	newState.setError = s.setError
 	return newState
 }
@@ -122,9 +122,9 @@ func (s *State) getCachedObject(addr thor.Address) *cachedObject {
 	a, err := loadAccount(s.trie, addr)
 	if err != nil {
 		s.setError(err)
-		return newCachedObject(s.triex, emptyAccount(), s.blockNum)
+		return newCachedObject(s.db, emptyAccount(), s.blockNum)
 	}
-	co := newCachedObject(s.triex, a, s.blockNum)
+	co := newCachedObject(s.db, a, s.blockNum)
 	s.cache[addr] = co
 	return co
 }
@@ -346,10 +346,10 @@ func (s *State) RevertTo(revision int) {
 }
 
 // BuildStorageTrie build up storage trie for given address with cumulative changes.
-func (s *State) BuildStorageTrie(addr thor.Address) (triex.Trie, error) {
+func (s *State) BuildStorageTrie(addr thor.Address) (muxdb.Trie, error) {
 	acc := s.getAccount(addr)
 
-	trie := s.triex.NewTrie(thor.BytesToBytes32(acc.StorageRoot), s.blockNum, true)
+	trie := s.db.NewTrie("s", thor.BytesToBytes32(acc.StorageRoot), s.blockNum, true)
 	// traverse journal to filter out storage changes for addr
 	s.sm.Journal(func(k, v interface{}) bool {
 		switch key := k.(type) {
@@ -379,7 +379,7 @@ func (s *State) Stage() *Stage {
 	if s.err != nil {
 		return &Stage{err: s.err}
 	}
-	return newStage(s.triex, s.root, changes, s.blockNum)
+	return newStage(s.db, s.root, changes, s.blockNum)
 }
 
 type (

@@ -9,11 +9,11 @@ import (
 	"github.com/vechain/thor/block"
 	"github.com/vechain/thor/builtin"
 	"github.com/vechain/thor/chain"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/poa"
 	"github.com/vechain/thor/runtime"
 	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/tx"
 	"github.com/vechain/thor/xenv"
 )
@@ -21,7 +21,7 @@ import (
 // Packer to pack txs and build new blocks.
 type Packer struct {
 	chain          *chain.Chain
-	triex          *triex.Proxy
+	db             *muxdb.MuxDB
 	nodeMaster     thor.Address
 	beneficiary    *thor.Address
 	targetGasLimit uint64
@@ -32,14 +32,14 @@ type Packer struct {
 // The beneficiary is optional, it defaults to endorsor if not set.
 func New(
 	chain *chain.Chain,
-	triex *triex.Proxy,
+	db *muxdb.MuxDB,
 	nodeMaster thor.Address,
 	beneficiary *thor.Address,
 	forkConfig thor.ForkConfig) *Packer {
 
 	return &Packer{
 		chain,
-		triex,
+		db,
 		nodeMaster,
 		beneficiary,
 		0,
@@ -49,7 +49,7 @@ func New(
 
 // Schedule schedule a packing flow to pack new block upon given parent and clock time.
 func (p *Packer) Schedule(parent *block.Header, nowTimestamp uint64) (flow *Flow, err error) {
-	state := state.New(p.triex, parent.StateRoot(), parent.Number())
+	state := state.New(p.db, parent.StateRoot(), parent.Number())
 
 	// Before process hook of VIP-191, update builtin extension contract's code to V2
 	vip191 := p.forkConfig.VIP191
@@ -120,7 +120,7 @@ func (p *Packer) Schedule(parent *block.Header, nowTimestamp uint64) (flow *Flow
 // It will skip the PoA verification and scheduling, and the block produced by
 // the returned flow is not in consensus.
 func (p *Packer) Mock(parent *block.Header, targetTime uint64, gasLimit uint64) (*Flow, error) {
-	state := state.New(p.triex, parent.StateRoot(), parent.Number())
+	state := state.New(p.db, parent.StateRoot(), parent.Number())
 
 	// Before process hook of VIP-191, update builtin extension contract's code to V2
 	vip191 := p.forkConfig.VIP191

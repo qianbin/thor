@@ -7,6 +7,7 @@ import (
 	"github.com/syndtr/goleveldb/leveldb/opt"
 	"github.com/syndtr/goleveldb/leveldb/storage"
 	"github.com/syndtr/goleveldb/leveldb/util"
+	"github.com/vechain/thor/kv"
 )
 
 var (
@@ -88,7 +89,7 @@ func (l *levelDB) Delete(key []byte) error {
 	return l.db.Delete(key, &writeOpt)
 }
 
-func (l *levelDB) Snapshot(fn func(Getter) error) error {
+func (l *levelDB) Snapshot(fn func(kv.Getter) error) error {
 	s, err := l.db.GetSnapshot()
 	if err != nil {
 		return err
@@ -108,7 +109,7 @@ func (l *levelDB) Snapshot(fn func(Getter) error) error {
 	})
 }
 
-func (l *levelDB) Batch(fn func(Putter) error) error {
+func (l *levelDB) Batch(fn func(kv.Putter) error) error {
 	batch := &leveldb.Batch{}
 	err := fn(struct {
 		putFunc

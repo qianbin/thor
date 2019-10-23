@@ -13,21 +13,22 @@ import (
 	"github.com/vechain/thor/block"
 	"github.com/vechain/thor/co"
 	"github.com/vechain/thor/kv"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/tx"
 )
 
 var (
-	errNotFound  = errors.New("not found")
-	bestBlockKey = []byte("best")
+	errNotFound    = errors.New("not found")
+	bestBlockIDKey = []byte("best-block-id")
 )
 
 // Chain describes a persistent block chain.
 // It's thread-safe.
 type Chain struct {
-	kv            kv.GetPutter
-	triex         *triex.Proxy
+	db            *muxdb.MuxDB
+	blockStore    kv.Store
+	propStore     kv.Store
 	genesisBlock  *block.Block
 	bestBlock     *block.Block
 	tag           byte
@@ -39,7 +40,7 @@ type Chain struct {
 }
 
 // New create an instance of Chain.
-func New(kv kv.GetPutter, triex *triex.Proxy, genesisBlock *block.Block) (*Chain, error) {
+func New(db *muxdb.MuxDB, genesisBlock *block.Block) (*Chain, error) {
 	if genesisBlock.Header().Number() != 0 {
 		return nil, errors.New("genesis number != 0")
 	}
@@ -49,8 +50,9 @@ func New(kv kv.GetPutter, triex *triex.Proxy, genesisBlock *block.Block) (*Chain
 	genesisID := genesisBlock.Header().ID()
 
 	chain := &Chain{
-		kv:            kv,
-		triex:         triex,
+		db:            db,
+		blockStore:    db.NewStore("b/", false),
+		propStore:     db.NewStore("p/", false),
 		genesisBlock:  genesisBlock,
 		tag:           genesisID[31],
 		headerCache:   newCache(8192),
@@ -59,11 +61,11 @@ func New(kv kv.GetPutter, triex *triex.Proxy, genesisBlock *block.Block) (*Chain
 	}
 
 	if bestBlockID, err := chain.loadBestBlockID(); err != nil {
-		if !kv.IsNotFound(err) {
+		if !db.IsNotFound(err) {
 			return nil, err
 		}
 
-		indexRoot, err := indexBlock(triex, thor.Bytes32{}, genesisBlock, nil)
+		indexRoot, err := chain.indexBlock(thor.Bytes32{}, genesisBlock, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -154,7 +156,7 @@ func (c *Chain) AddBlock(newBlock *block.Block, receipts tx.Receipts) error {
 		return err
 	}
 
-	indexRoot, err := indexBlock(c.triex, parentIndexRoot, newBlock, receipts)
+	indexRoot, err := c.indexBlock(parentIndexRoot, newBlock, receipts)
 	if err != nil {
 		return err
 	}
@@ -176,7 +178,7 @@ func (c *Chain) AddBlock(newBlock *block.Block, receipts tx.Receipts) error {
 // GetBlockHeader get block header and index root by block id.
 func (c *Chain) GetBlockHeader(id thor.Bytes32) (*block.Header, thor.Bytes32, error) {
 	val, err := c.headerCache.GetOrLoad(id, func(interface{}) (interface{}, error) {
-		return loadBlockHeader(c.kv, id)
+		return loadBlockHeader(c.blockStore, id)
 	})
 	if err != nil {
 		return nil, thor.Bytes32{}, err
@@ -198,7 +200,7 @@ func (c *Chain) GetBlock(id thor.Bytes32) (*block.Block, error) {
 	}
 
 	txs, err := c.bodyCache.GetOrLoad(txsRoot, func(interface{}) (interface{}, error) {
-		return loadTransactions(c.kv, txsRoot)
+		return loadTransactions(c.blockStore, txsRoot)
 	})
 	if err != nil {
 		return nil, err
@@ -218,7 +220,7 @@ func (c *Chain) GetReceipts(id thor.Bytes32) (tx.Receipts, error) {
 	}
 
 	receipts, err := c.receiptsCache.GetOrLoad(receiptsRoot, func(interface{}) (interface{}, error) {
-		return loadReceipts(c.kv, receiptsRoot)
+		return loadReceipts(c.blockStore, receiptsRoot)
 	})
 	if err != nil {
 		return nil, err
@@ -233,7 +235,7 @@ func (c *Chain) NewSeeker(headID thor.Bytes32) *Seeker {
 
 // IsNotFound returns if an error means not found.
 func (c *Chain) IsNotFound(err error) bool {
-	return err == errNotFound || c.kv.IsNotFound(err)
+	return err == errNotFound || c.db.IsNotFound(err)
 }
 
 // NewTicker create a signal Waiter to receive event of head block change.
@@ -253,7 +255,7 @@ func (c *Chain) NewBranch(headID thor.Bytes32) *Branch {
 
 // loadBestBlockID returns the best block ID on trunk.
 func (c *Chain) loadBestBlockID() (thor.Bytes32, error) {
-	data, err := c.triex.GetArbitrary(bestBlockKey)
+	data, err := c.propStore.Get(bestBlockIDKey)
 	if err != nil {
 		return thor.Bytes32{}, err
 	}
@@ -262,7 +264,7 @@ func (c *Chain) loadBestBlockID() (thor.Bytes32, error) {
 
 // saveBestBlockID save the best block ID on trunk.
 func (c *Chain) saveBestBlockID(id thor.Bytes32) error {
-	return c.triex.PutArbitrary(bestBlockKey, id[:])
+	return c.propStore.Put(bestBlockIDKey, id[:])
 }
 func (c *Chain) saveBlockAndReceipts(
 	block *block.Block,
@@ -275,25 +277,24 @@ func (c *Chain) saveBlockAndReceipts(
 		txsRoot      = header.TxsRoot()
 		receiptsRoot = header.ReceiptsRoot()
 		extHeader    = &extHeader{header, indexRoot}
-		batch        = c.kv.NewBatch()
 	)
+	if err := c.blockStore.Batch(func(putter kv.Putter) error {
+		if txsRoot != emptyRoot {
+			if err := saveTransactions(putter, txsRoot, txs); err != nil {
+				return err
+			}
+		}
+		if receiptsRoot != emptyRoot {
+			if err := saveReceipts(putter, receiptsRoot, receipts); err != nil {
+				return err
+			}
+		}
 
-	if txsRoot != emptyRoot {
-		if err := saveTransactions(batch, txsRoot, txs); err != nil {
+		if err := saveBlockHeader(putter, extHeader); err != nil {
 			return err
 		}
-	}
-	if receiptsRoot != emptyRoot {
-		if err := saveReceipts(batch, receiptsRoot, receipts); err != nil {
-			return err
-		}
-	}
-
-	if err := saveBlockHeader(batch, extHeader); err != nil {
-		return err
-	}
-
-	if err := batch.Write(); err != nil {
+		return nil
+	}); err != nil {
 		return err
 	}
 
@@ -306,7 +307,6 @@ func (c *Chain) saveBlockAndReceipts(
 	}
 
 	c.headerCache.Add(header.ID(), extHeader)
-
 	return nil
 }
 

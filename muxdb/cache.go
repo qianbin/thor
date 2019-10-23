@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/allegro/bigcache"
+	"github.com/vechain/thor/kv"
 )
 
 type cache struct {
@@ -64,5 +65,32 @@ func (c *cache) ProxyDelete(del deleteFunc) deleteFunc {
 		}
 		c.bigcache.Delete(string(key))
 		return nil
+	}
+}
+
+func (c *cache) ProxyGetter(getter kv.Getter) kv.Getter {
+	if c == nil {
+		return getter
+	}
+	return struct {
+		getFunc
+		hasFunc
+	}{
+		c.ProxyGet(getter.Get),
+		getter.Has,
+	}
+}
+
+func (c *cache) ProxyPutter(putter kv.Putter) kv.Putter {
+	if c == nil {
+		return putter
+	}
+
+	return struct {
+		putFunc
+		deleteFunc
+	}{
+		c.ProxyPut(putter.Put),
+		c.ProxyDelete(putter.Delete),
 	}
 }

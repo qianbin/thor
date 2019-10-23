@@ -11,6 +11,8 @@ type Trie interface {
 	Hash() (thor.Bytes32, error)
 	Commit() (thor.Bytes32, error)
 	NodeIterator(start []byte) (trie.NodeIterator, error)
+
+	Prefix() []byte
 }
 
 type trieWrap struct {
@@ -18,6 +20,9 @@ type trieWrap struct {
 	err     error
 	hashKey func(key []byte, save bool) []byte
 	batch   func(func(putFunc) error) error
+
+	name string
+	seg  segment
 }
 
 func (t *trieWrap) Get(key []byte) ([]byte, error) {
@@ -67,4 +72,8 @@ func (t *trieWrap) NodeIterator(start []byte) (trie.NodeIterator, error) {
 		return nil, t.err
 	}
 	return t.raw.NodeIterator(start), nil
+}
+
+func (t *trieWrap) Prefix() []byte {
+	return append(append([]byte{trieSlot}, []byte(t.name)...), byte(t.seg>>8), byte(t.seg))
 }

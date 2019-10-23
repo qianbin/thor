@@ -18,6 +18,9 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/inconshreveable/log15"
 	"github.com/pkg/errors"
+	"github.com/syndtr/goleveldb/leveldb"
+	dberrors "github.com/syndtr/goleveldb/leveldb/errors"
+	"github.com/syndtr/goleveldb/leveldb/opt"
 	"github.com/vechain/thor/block"
 	"github.com/vechain/thor/cache"
 	"github.com/vechain/thor/chain"
@@ -25,10 +28,9 @@ import (
 	"github.com/vechain/thor/comm"
 	"github.com/vechain/thor/consensus"
 	"github.com/vechain/thor/logdb"
-	"github.com/vechain/thor/lvldb"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/packer"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/tx"
 	"github.com/vechain/thor/txpool"
 )
@@ -55,7 +57,7 @@ type Node struct {
 func New(
 	master *Master,
 	chain *chain.Chain,
-	triex *triex.Proxy,
+	db *muxdb.MuxDB,
 	logDB *logdb.LogDB,
 	txPool *txpool.TxPool,
 	txStashPath string,
@@ -65,8 +67,8 @@ func New(
 	forkConfig thor.ForkConfig,
 ) *Node {
 	return &Node{
-		packer:         packer.New(chain, triex, master.Address(), master.Beneficiary, forkConfig),
-		cons:           consensus.New(chain, triex, forkConfig),
+		packer:         packer.New(chain, db, master.Address(), master.Beneficiary, forkConfig),
+		cons:           consensus.New(chain, db, forkConfig),
 		master:         master,
 		chain:          chain,
 		logDB:          logDB,
@@ -202,7 +204,10 @@ func (n *Node) txStashLoop(ctx context.Context) {
 	log.Debug("enter tx stash loop")
 	defer log.Debug("leave tx stash loop")
 
-	db, err := lvldb.New(n.txStashPath, lvldb.Options{})
+	db, err := leveldb.OpenFile(n.txStashPath, &opt.Options{})
+	if _, corrupted := err.(*dberrors.ErrCorrupted); corrupted {
+		db, err = leveldb.RecoverFile(n.txStashPath, nil)
+	}
 	if err != nil {
 		log.Error("create tx stash", "err", err)
 		return

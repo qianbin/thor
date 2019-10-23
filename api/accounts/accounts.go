@@ -19,37 +19,37 @@ import (
 	"github.com/vechain/thor/api/utils"
 	"github.com/vechain/thor/block"
 	"github.com/vechain/thor/chain"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/runtime"
 	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/triex"
 	"github.com/vechain/thor/tx"
 	"github.com/vechain/thor/xenv"
 )
 
 type Accounts struct {
 	chain        *chain.Chain
-	triex        *triex.Proxy
+	db           *muxdb.MuxDB
 	callGasLimit uint64
 	forkConfig   thor.ForkConfig
 }
 
 func New(
 	chain *chain.Chain,
-	triex *triex.Proxy,
+	db *muxdb.MuxDB,
 	callGasLimit uint64,
 	forkConfig thor.ForkConfig,
 ) *Accounts {
 	return &Accounts{
 		chain,
-		triex,
+		db,
 		callGasLimit,
 		forkConfig,
 	}
 }
 
 func (a *Accounts) getCode(addr thor.Address, header *block.Header) ([]byte, error) {
-	state := state.New(a.triex, header.StateRoot(), header.Number())
+	state := state.New(a.db, header.StateRoot(), header.Number())
 
 	code := state.GetCode(addr)
 	if err := state.Err(); err != nil {
@@ -76,7 +76,7 @@ func (a *Accounts) handleGetCode(w http.ResponseWriter, req *http.Request) error
 }
 
 func (a *Accounts) getAccount(addr thor.Address, header *block.Header) (*Account, error) {
-	state := state.New(a.triex, header.StateRoot(), header.Number())
+	state := state.New(a.db, header.StateRoot(), header.Number())
 
 	b := state.GetBalance(addr)
 	code := state.GetCode(addr)
@@ -92,7 +92,7 @@ func (a *Accounts) getAccount(addr thor.Address, header *block.Header) (*Account
 }
 
 func (a *Accounts) getStorage(addr thor.Address, key thor.Bytes32, header *block.Header) (thor.Bytes32, error) {
-	state := state.New(a.triex, header.StateRoot(), header.Number())
+	state := state.New(a.db, header.StateRoot(), header.Number())
 
 	storage := state.GetStorage(addr, key)
 	if err := state.Err(); err != nil {
@@ -194,7 +194,7 @@ func (a *Accounts) batchCall(ctx context.Context, batchCallData *BatchCallData, 
 	if err != nil {
 		return nil, err
 	}
-	state := state.New(a.triex, header.StateRoot(), header.Number())
+	state := state.New(a.db, header.StateRoot(), header.Number())
 
 	signer, _ := header.Signer()
 	rt := runtime.New(a.chain.NewSeeker(header.ParentID()), state,
