@@ -129,118 +129,122 @@ func main() {
 
 func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 	configStore := db.NewStore("config/", false)
+
+	// go func() {
+	// 	// prune index trie
+	// 	var (
+	// 		bloom = thor.NewBigBloom(64, 3)
+	// 		gen   = uint32(0)
+	// 	)
+
+	// 	v, _ := configStore.Get([]byte("index-trie-pruned"))
+	// 	if len(v) == 4 {
+	// 		gen = binary.BigEndian.Uint32(v)
+	// 	}
+
+	// 	for {
+	// 		bloom.Reset()
+	// 		for {
+	// 			if chain.BestBlock().Header().Number() >= (gen+1)<<16+50 {
+	// 				break
+	// 			}
+	// 			time.Sleep(time.Second)
+	// 		}
+	// 		n1 := gen << 16
+	// 		n2 := (gen + 1) << 16
+	// 		gen++
+
+	// 		fmt.Printf("I Pruner: start [%v, %v]\n", n1, n2)
+
+	// 		// index trie
+
+	// 		id1, err := chain.NewTrunk().GetBlockID(n1)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+	// 		id2, err := chain.NewTrunk().GetBlockID(n2)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+
+	// 		_, root1, err := chain.GetBlockHeader(id1)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+	// 		_, root2, err := chain.GetBlockHeader(id2)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+
+	// 		indexTrieEntries := 0
+	// 		t1 := db.NewTrie("i", root1, n1, false)
+	// 		it1, err := t1.NodeIterator(nil)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+	// 		it2, err := db.NewTrie("i", root2, n2, false).NodeIterator(nil)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+	// 		it, _ := trie.NewDifferenceIterator(it1, it2)
+	// 		for it.Next(true) {
+	// 			if h := it.Hash(); !h.IsZero() {
+	// 				indexTrieEntries++
+	// 				bloom.Add(h)
+	// 			}
+	// 		}
+	// 		if err := it.Error(); err != nil {
+	// 			panic(err)
+	// 		}
+	// 		fmt.Println("I Pruner: index trie entries", indexTrieEntries)
+
+	// 		prefix := t1.Prefix()
+
+	// 		fmt.Printf("I Pruner: deleting prefix %x...\n", prefix)
+	// 		scaned := 0
+	// 		deleted := 0
+
+	// 		prefixLen := len(prefix)
+
+	// 		lowStore := db.LowStore()
+	// 		var tempKey [2 + 2 + 32]byte
+
+	// 		lowStore.Iterate(prefix, func(key, val []byte) error {
+	// 			scaned++
+	// 			lowStore.Batch(func(w kv.Putter) error {
+	// 				if bloom.Test(thor.BytesToBytes32(key[prefixLen:])) {
+	// 					copy(tempKey[:], key)
+	// 					tempKey[2] = 255
+	// 					tempKey[3] = 255
+	// 					w.Put(tempKey[:], val)
+	// 				} else {
+	// 					deleted++
+	// 				}
+	// 				w.Delete(key)
+	// 				return nil
+	// 			})
+	// 			return nil
+	// 		})
+
+	// 		fmt.Println("I Pruner: deleted", deleted, "/", scaned, "entries  ", float64(deleted*100)/float64(scaned), "%")
+	// 		mu.Lock()
+	// 		fmt.Println("I Pruner: do compact")
+
+	// 		if err := lowStore.Compact(prefix); err != nil {
+	// 			fmt.Println(err)
+	// 		}
+
+	// 		fmt.Println("I Pruner: compact done")
+	// 		mu.Unlock()
+	// 		var kk [4]byte
+	// 		binary.BigEndian.PutUint32(kk[:], gen)
+	// 		configStore.Put([]byte("index-trie-pruned"), kk[:])
+	// 	}
+	// }()
 	go func() {
-		// prune index trie
-		var (
-			bloom = thor.NewBigBloom(64, 3)
-			gen   = uint32(0)
-		)
-
-		v, _ := configStore.Get([]byte("index-trie-pruned"))
-		if len(v) == 4 {
-			gen = binary.BigEndian.Uint32(v)
-		}
-
-		for {
-			bloom.Reset()
-			for {
-				if chain.BestBlock().Header().Number() >= (gen+1)<<16+50 {
-					break
-				}
-				time.Sleep(time.Second)
-			}
-			n1 := gen << 16
-			n2 := (gen + 1) << 16
-			gen++
-
-			fmt.Printf("I Pruner: start [%v, %v]\n", n1, n2)
-
-			// index trie
-
-			id1, err := chain.NewTrunk().GetBlockID(n1)
-			if err != nil {
-				panic(err)
-			}
-			id2, err := chain.NewTrunk().GetBlockID(n2)
-			if err != nil {
-				panic(err)
-			}
-
-			_, root1, err := chain.GetBlockHeader(id1)
-			if err != nil {
-				panic(err)
-			}
-			_, root2, err := chain.GetBlockHeader(id2)
-			if err != nil {
-				panic(err)
-			}
-
-			indexTrieEntries := 0
-			t1 := db.NewTrie("i", root1, n1, false)
-			it1, err := t1.NodeIterator(nil)
-			if err != nil {
-				panic(err)
-			}
-			it2, err := db.NewTrie("i", root2, n2, false).NodeIterator(nil)
-			if err != nil {
-				panic(err)
-			}
-			it, _ := trie.NewDifferenceIterator(it1, it2)
-			for it.Next(true) {
-				if h := it.Hash(); !h.IsZero() {
-					indexTrieEntries++
-					bloom.Add(h)
-				}
-			}
-			if err := it.Error(); err != nil {
-				panic(err)
-			}
-			fmt.Println("I Pruner: index trie entries", indexTrieEntries)
-
-			prefix := t1.Prefix()
-
-			fmt.Printf("I Pruner: deleting prefix %x...\n", prefix)
-			scaned := 0
-			deleted := 0
-
-			prefixLen := len(prefix)
-
-			lowStore := db.LowStore()
-			var tempKey [2 + 2 + 32]byte
-
-			lowStore.Iterate(prefix, func(key, val []byte) error {
-				scaned++
-				lowStore.Batch(func(w kv.Putter) error {
-					if bloom.Test(thor.BytesToBytes32(key[prefixLen:])) {
-						copy(tempKey[:], key)
-						tempKey[2] = 255
-						tempKey[3] = 255
-						w.Put(tempKey[:], val)
-					} else {
-						deleted++
-					}
-					w.Delete(key)
-					return nil
-				})
-				return nil
-			})
-
-			fmt.Println("I Pruner: deleted", deleted, "/", scaned, "entries  ", float64(deleted*100)/float64(scaned), "%")
-			fmt.Println("I Pruner: do compact")
-
-			if err := lowStore.Compact(prefix); err != nil {
-				fmt.Println(err)
-			}
-			fmt.Println("I Pruner: compact done")
-			var kk [4]byte
-			binary.BigEndian.PutUint32(kk[:], gen)
-			configStore.Put([]byte("index-trie-pruned"), kk[:])
-		}
-	}()
-	go func() {
-
 		var (
 			gen    = uint32(0)
+			ibloom = thor.NewBigBloom(64, 3)
 			abloom = thor.NewBigBloom(64, 3)
 			sbloom = thor.NewBigBloom(64, 3)
 		)
@@ -251,6 +255,7 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 		}
 
 		for {
+			ibloom.Reset()
 			abloom.Reset()
 			sbloom.Reset()
 			for {
@@ -263,15 +268,78 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 			n2 := (gen + 1) << 16
 			gen++
 
-			fmt.Printf("A Pruner: start [%v, %v]\n", n1, n2)
+			fmt.Printf("Pruner: start [%v, %v]\n", n1, n2)
 
-			h1, err := chain.NewTrunk().GetBlockHeader(n1)
+			id1, err := chain.NewTrunk().GetBlockID(n1)
 			if err != nil {
 				panic(err)
 			}
-			h2, err := chain.NewTrunk().GetBlockHeader(n2)
+
+			id2, err := chain.NewTrunk().GetBlockID(n2)
 			if err != nil {
 				panic(err)
+			}
+
+			h1, iroot1, err := chain.GetBlockHeader(id1)
+			if err != nil {
+				panic(err)
+			}
+			h2, iroot2, err := chain.GetBlockHeader(id2)
+			if err != nil {
+				panic(err)
+			}
+
+			{
+				indexTrieEntries := 0
+				t1 := db.NewTrie("i", iroot1, n1, false)
+				it1, err := t1.NodeIterator(nil)
+				if err != nil {
+					panic(err)
+				}
+				it2, err := db.NewTrie("i", iroot2, n2, false).NodeIterator(nil)
+				if err != nil {
+					panic(err)
+				}
+				it, _ := trie.NewDifferenceIterator(it1, it2)
+				for it.Next(true) {
+					if h := it.Hash(); !h.IsZero() {
+						indexTrieEntries++
+						ibloom.Add(h)
+					}
+				}
+				if err := it.Error(); err != nil {
+					panic(err)
+				}
+				fmt.Println("Pruner: index trie entries", indexTrieEntries)
+				prefix := t1.Prefix()
+
+				fmt.Printf("Pruner: deleting prefix %x...\n", prefix)
+				scaned := 0
+				deleted := 0
+
+				prefixLen := len(prefix)
+
+				lowStore := db.LowStore()
+				var tempKey [2 + 2 + 32]byte
+
+				lowStore.Iterate(prefix, func(key, val []byte) error {
+					scaned++
+					lowStore.Batch(func(w kv.Putter) error {
+						if ibloom.Test(thor.BytesToBytes32(key[prefixLen:])) {
+							copy(tempKey[:], key)
+							tempKey[1] = 255
+							tempKey[2] = 255
+							w.Put(tempKey[:], val)
+						} else {
+							deleted++
+						}
+						w.Delete(key)
+						return nil
+					})
+					return nil
+				})
+
+				fmt.Println("Pruner: deleted", deleted, "/", scaned, "entries  ", float64(deleted*100)/float64(scaned), "%")
 			}
 
 			accountTrieEntries := 0
@@ -339,15 +407,15 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 			if err := it.Error(); err != nil {
 				panic(err)
 			}
-			fmt.Println("A Pruner: account trie entries", accountTrieEntries)
-			fmt.Println("A Pruner: storage trie entries", storageTrieEntries)
+			fmt.Println("Pruner: account trie entries", accountTrieEntries)
+			fmt.Println("Pruner: storage trie entries", storageTrieEntries)
 
 			lowStore := db.LowStore()
 
 			sprefix := db.NewTrie("s", thor.Bytes32{}, n1, false).Prefix()
 			sprefixLen := len(sprefix)
 			var tempKey [2 + 2 + 32]byte
-			fmt.Printf("A Pruner: deleting prefix %x...\n", sprefix)
+			fmt.Printf("Pruner: deleting prefix %x...\n", sprefix)
 			sscaned := 0
 			sdeleted := 0
 			lowStore.Iterate(sprefix, func(key, val []byte) error {
@@ -355,8 +423,8 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 				lowStore.Batch(func(w kv.Putter) error {
 					if sbloom.Test(thor.BytesToBytes32(key[sprefixLen:])) {
 						copy(tempKey[:], key)
+						tempKey[1] = 255
 						tempKey[2] = 255
-						tempKey[3] = 255
 						w.Put(tempKey[:], val)
 					} else {
 						sdeleted++
@@ -367,13 +435,7 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 				return nil
 			})
 
-			fmt.Println("A Pruner: storage deleted", sdeleted, "/", sscaned, "entries  ", float64(sdeleted*100)/float64(sscaned), "%")
-			fmt.Println("A Pruner: storage do compact")
-
-			if err := lowStore.Compact(sprefix); err != nil {
-				fmt.Println(err)
-			}
-			fmt.Println("A Pruner: storage compact done")
+			fmt.Println("Pruner: storage deleted", sdeleted, "/", sscaned, "entries  ", float64(sdeleted*100)/float64(sscaned), "%")
 
 			for {
 				if chain.BestBlock().Header().Number() >= (gen)<<16+65536+50 {
@@ -382,9 +444,9 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 				time.Sleep(time.Second)
 			}
 
-			aprefix := db.NewTrie("s", thor.Bytes32{}, n1, false).Prefix()
+			aprefix := db.NewTrie("a", thor.Bytes32{}, n1, false).Prefix()
 
-			fmt.Printf("A Pruner: deleting prefix %x...\n", aprefix)
+			fmt.Printf("Pruner: deleting prefix %x...\n", aprefix)
 			ascaned := 0
 			adeleted := 0
 
@@ -395,8 +457,8 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 				lowStore.Batch(func(w kv.Putter) error {
 					if abloom.Test(thor.BytesToBytes32(key[aprefixLen:])) {
 						copy(tempKey[:], key)
+						tempKey[1] = 255
 						tempKey[2] = 255
-						tempKey[3] = 255
 						w.Put(tempKey[:], val)
 					} else {
 						adeleted++
@@ -407,13 +469,15 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 				return nil
 			})
 
-			fmt.Println("A Pruner: account deleted", adeleted, "/", ascaned, "entries  ", float64(adeleted*100)/float64(ascaned), "%")
-			fmt.Println("A Pruner: account do compact")
+			fmt.Println("Pruner: account deleted", adeleted, "/", ascaned, "entries  ", float64(adeleted*100)/float64(ascaned), "%")
 
-			if err := lowStore.Compact(aprefix); err != nil {
+			fmt.Println("Pruner: do compact")
+
+			if err := lowStore.Compact([]byte{aprefix[0], 0, 0}, db.NewTrie("a", thor.Bytes32{}, n2, false).Prefix()[:3]); err != nil {
 				fmt.Println(err)
 			}
-			fmt.Println("A Pruner: account compact done")
+			fmt.Println("Pruner: compact done")
+
 			var kk [4]byte
 			binary.BigEndian.PutUint32(kk[:], gen)
 			configStore.Put([]byte("state-pruned"), kk[:])
@@ -457,6 +521,19 @@ func defaultAction(ctx *cli.Context) error {
 	defer func() { log.Info("closing log database..."); logDB.Close() }()
 
 	chain := initChain(gene, mainDB, logDB)
+
+	// b := chain.NewBranch(chain.BestBlock().Header().ID())
+	// n := chain.BestBlock().Header().Number()
+	// for i := uint32(0); i < n; i++ {
+	// 	_, err := b.GetBlockID(i)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	if i%1000 == 0 {
+	// 		fmt.Println(i)
+	// 	}
+	// }
+	// return nil
 
 	// _, indexRoot, _ := chain.GetBlockHeader(chain.BestBlock().Header().ID())
 

@@ -16,7 +16,7 @@ type Store interface {
 	Snapshot(fn func(Getter) error) error
 	Batch(fn func(Putter) error) error
 	Iterate(prefix []byte, fn func(key, val []byte) error) error
-	Compact(prefix []byte) error
+	Compact(from, to []byte) error
 
 	IsNotFound(error) bool
 }

@@ -15,7 +15,7 @@ type isNotFoundFunc func(error) bool
 type snapshotFunc func(func(getter kv.Getter) error) error
 type batchFunc func(func(putter kv.Putter) error) error
 type iterateFunc func(prefix []byte, fn func(key, val []byte) error) error
-type compactFunc func(prefix []byte) error
+type compactFunc func(from, to []byte) error
 
 func (f getFunc) Get(key []byte) ([]byte, error)               { return f(key) }
 func (f hasFunc) Has(key []byte) (bool, error)                 { return f(key) }
@@ -27,4 +27,4 @@ func (f batchFunc) Batch(fn func(kv.Putter) error) error       { return f(fn) }
 func (f iterateFunc) Iterate(prefix []byte, fn func(key, val []byte) error) error {
 	return f(prefix, fn)
 }
-func (f compactFunc) Compact(prefix []byte) error { return f(prefix) }
+func (f compactFunc) Compact(from, to []byte) error { return f(from, to) }

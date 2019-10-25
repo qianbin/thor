@@ -38,6 +38,7 @@ func openLevelDB(
 	}
 
 	db, err := leveldb.OpenFile(path, &opt.Options{
+
 		CompactionTableSizeMultiplier: 2,
 		OpenFilesCacheCapacity:        fileDescriptorCache,
 		BlockCacheCapacity:            cacheSize / 2 * opt.MiB,
@@ -142,6 +143,6 @@ func (l *levelDB) Iterate(prefix []byte, fn func(key, val []byte) error) error {
 	return it.Error()
 }
 
-func (l *levelDB) Compact(prefix []byte) error {
-	return l.db.CompactRange(*util.BytesPrefix(prefix))
+func (l *levelDB) Compact(from, to []byte) error {
+	return l.db.CompactRange(util.Range{Start: from, Limit: to})
 }

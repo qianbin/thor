@@ -75,5 +75,5 @@ func (t *trieWrap) NodeIterator(start []byte) (trie.NodeIterator, error) {
 }
 
 func (t *trieWrap) Prefix() []byte {
-	return append(append([]byte{trieSlot}, []byte(t.name)...), byte(t.seg>>8), byte(t.seg))
+	return append(append([]byte{trieSlot}, byte(t.seg>>8), byte(t.seg)), []byte(t.name)...)
 }

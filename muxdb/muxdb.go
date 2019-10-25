@@ -46,7 +46,8 @@ func (m *MuxDB) NewTrie(name string, root thor.Bytes32, blockNum uint32, secure 
 	var (
 		rSeg = segment((blockNum - 1) >> 16)
 		wSeg = segment(blockNum >> 16)
-		bkt  = append(bucket{trieSlot}, []byte(name)...)
+		bkt  = bucket{trieSlot}
+		nbkt = bucket([]byte(name))
 	)
 
 	raw, err := trie.New(root, struct {
@@ -54,7 +55,7 @@ func (m *MuxDB) NewTrie(name string, root thor.Bytes32, blockNum uint32, secure 
 		hasFunc
 		putFunc
 	}{
-		m.cache.ProxyGet(func(key []byte) ([]byte, error) {
+		m.cache.ProxyGet(nbkt.ProxyGet(func(key []byte) ([]byte, error) {
 			var val []byte
 			if err := m.engine.Snapshot(func(getter kv.Getter) error {
 				v, err := rSeg.ProxyGet(bkt.ProxyGet(getter.Get))(key)
@@ -67,7 +68,7 @@ func (m *MuxDB) NewTrie(name string, root thor.Bytes32, blockNum uint32, secure 
 				return nil, err
 			}
 			return val, nil
-		}),
+		})),
 		nil,
 		nil,
 	})
@@ -102,7 +103,7 @@ func (m *MuxDB) NewTrie(name string, root thor.Bytes32, blockNum uint32, secure 
 						}
 					}
 					secureKeyPreimages = nil
-					return fn(m.cache.ProxyPut(wSeg.ProxyPut(bkt.ProxyPut(putter.Put))))
+					return fn(m.cache.ProxyPut(nbkt.ProxyPut(wSeg.ProxyPut(bkt.ProxyPut(putter.Put)))))
 				})
 			},
 			name,
@@ -116,7 +117,7 @@ func (m *MuxDB) NewTrie(name string, root thor.Bytes32, blockNum uint32, secure 
 		func(key []byte, save bool) []byte { return key },
 		func(fn func(putFunc) error) error {
 			return m.engine.Batch(func(putter kv.Putter) error {
-				return fn(m.cache.ProxyPut(wSeg.ProxyPut(bkt.ProxyPut(putter.Put))))
+				return fn(m.cache.ProxyPut(nbkt.ProxyPut(wSeg.ProxyPut(bkt.ProxyPut(putter.Put)))))
 			})
 		},
 		name,
@@ -159,7 +160,7 @@ func (m *MuxDB) NewStore(name string, doCache bool) kv.Store {
 			})
 		},
 		m.engine.IsNotFound,
-		func([]byte) error { return errors.New("not supported") },
+		func([]byte, []byte) error { return errors.New("not supported") },
 	}
 }
 
