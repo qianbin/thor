@@ -75,6 +75,10 @@ type NodeIterator interface {
 
 	// Hash returns the hash of the current node.
 	Hash() thor.Bytes32
+
+	// Node returns encoded current node.
+	Node() ([]byte, error)
+
 	// Parent returns the hash of the parent of the current node. The hash may be the one
 	// grandparent if the immediate parent is an internal node with no hash.
 	Parent() thor.Bytes32
@@ -105,11 +109,12 @@ type NodeIterator interface {
 // nodeIteratorState represents the iteration state at one particular node of the
 // trie, which can be resumed at a later invocation.
 type nodeIteratorState struct {
-	hash    thor.Bytes32 // Hash of the node being iterated (nil if not standalone)
-	node    node         // Trie node being iterated
-	parent  thor.Bytes32 // Hash of the first full ancestor node (nil if current is the root)
-	index   int          // Child to be processed next
-	pathlen int          // Length of the path to this node
+	hash     thor.Bytes32 // Hash of the node being iterated (nil if not standalone)
+	node     node         // Trie node being iterated
+	nodeBlob []byte
+	parent   thor.Bytes32 // Hash of the first full ancestor node (nil if current is the root)
+	index    int          // Child to be processed next
+	pathlen  int          // Length of the path to this node
 }
 
 type nodeIterator struct {
@@ -146,6 +151,21 @@ func (it *nodeIterator) Hash() thor.Bytes32 {
 		return thor.Bytes32{}
 	}
 	return it.stack[len(it.stack)-1].hash
+}
+
+func (it *nodeIterator) Node() ([]byte, error) {
+	if len(it.stack) == 0 {
+		return nil, nil
+	}
+	st := it.stack[len(it.stack)-1]
+	if len(st.nodeBlob) > 0 {
+		return st.nodeBlob, nil
+	}
+
+	if st.hash.IsZero() {
+		return nil, nil
+	}
+	return it.trie.db.Get(st.hash[:])
 }
 
 func (it *nodeIterator) Parent() thor.Bytes32 {
@@ -294,11 +314,12 @@ func (it *nodeIterator) peek(descend bool) (*nodeIteratorState, *int, []byte, er
 
 func (st *nodeIteratorState) resolve(tr *Trie, path []byte) error {
 	if hash, ok := st.node.(hashNode); ok {
-		resolved, err := tr.resolveHash(hash, path)
+		resolved, enc, err := tr.resolveHash(hash, path)
 		if err != nil {
 			return err
 		}
 		st.node = resolved
+		st.nodeBlob = enc
 		st.hash = thor.BytesToBytes32(hash)
 	}
 	return nil
@@ -394,6 +415,10 @@ func NewDifferenceIterator(a, b NodeIterator) (NodeIterator, *int) {
 
 func (it *differenceIterator) Hash() thor.Bytes32 {
 	return it.b.Hash()
+}
+
+func (it *differenceIterator) Node() ([]byte, error) {
+	return it.b.Node()
 }
 
 func (it *differenceIterator) Parent() thor.Bytes32 {
@@ -501,6 +526,9 @@ func NewUnionIterator(iters []NodeIterator) (NodeIterator, *int) {
 
 func (it *unionIterator) Hash() thor.Bytes32 {
 	return (*it.items)[0].Hash()
+}
+func (it *unionIterator) Node() ([]byte, error) {
+	return (*it.items)[0].Node()
 }
 
 func (it *unionIterator) Parent() thor.Bytes32 {

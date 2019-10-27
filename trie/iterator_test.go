@@ -24,6 +24,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/stretchr/testify/assert"
 	"github.com/vechain/thor/thor"
 )
 
@@ -54,6 +55,32 @@ func TestIterator(t *testing.T) {
 	for k, v := range all {
 		if found[k] != v {
 			t.Errorf("iterator value mismatch for %s: got %q want %q", k, found[k], v)
+		}
+	}
+
+	// test Node() method
+	// for committed trie
+	i := trie.NodeIterator(nil)
+	for i.Next(true) {
+		n, err := i.Node()
+		assert.Nil(t, err)
+		if h := i.Hash(); !h.IsZero() {
+			assert.Equal(t, h, thor.Blake2b(n))
+		} else {
+			assert.Nil(t, n)
+		}
+	}
+
+	// for init trie
+
+	trie, _ = New(trie.Hash(), trie.db)
+	for i.Next(true) {
+		n, err := i.Node()
+		assert.Nil(t, err)
+		if h := i.Hash(); !h.IsZero() {
+			assert.Equal(t, h, thor.Blake2b(n))
+		} else {
+			assert.Nil(t, n)
 		}
 	}
 }
