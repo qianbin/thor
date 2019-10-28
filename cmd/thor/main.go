@@ -7,7 +7,6 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -22,6 +21,7 @@ import (
 	isatty "github.com/mattn/go-isatty"
 	"github.com/pborman/uuid"
 	"github.com/pkg/errors"
+	"github.com/syndtr/goleveldb/leveldb/util"
 	"github.com/vechain/thor/api"
 	"github.com/vechain/thor/block"
 	"github.com/vechain/thor/chain"
@@ -127,8 +127,221 @@ func main() {
 	}
 }
 
+type pruneStatus struct {
+	N uint32
+	I uint32
+}
+
+func getPruneStatus(s kv.Store) *pruneStatus {
+	val, _ := s.Get([]byte("ps"))
+
+	var ps pruneStatus
+	rlp.DecodeBytes(val, &ps)
+	return &ps
+}
+
+func setPruneStatus(s kv.Store, ps *pruneStatus) {
+	data, _ := rlp.EncodeToBytes(ps)
+	s.Put([]byte("ps"), data)
+}
+
 func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
-	configStore := db.NewStore("config/", false)
+
+	go func() {
+		var (
+			lowStore = db.LowStore()
+			n1       = uint32(0)
+			n2       = uint32(0)
+			rollingI = 0
+		)
+
+		for {
+			n1 = n2
+
+			for {
+				if chain.BestBlock().Header().Number() > n1+50000 {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+
+			rollingI++
+			newPrefix, oldPrefix, maturePrefix := db.RollTrie(rollingI)
+			fmt.Printf("Pruner: %x %x %x\n", newPrefix, oldPrefix, maturePrefix)
+			n2 = chain.BestBlock().Header().Number() + 20
+
+			for {
+				if chain.BestBlock().Header().Number() > n2+40 {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+
+			fmt.Printf("Pruner: start [%v, %v]\n", n1, n2)
+			accEntries := 0
+			storageEntries := 0
+			indexEntries := 0
+
+			id1, err := chain.NewTrunk().GetBlockID(n1)
+			if err != nil {
+				panic(err)
+			}
+			id2, err := chain.NewTrunk().GetBlockID(n2)
+			if err != nil {
+				panic(err)
+			}
+
+			h1, iroot1, err := chain.GetBlockHeader(id1)
+			if err != nil {
+				panic(err)
+			}
+
+			h2, iroot2, err := chain.GetBlockHeader(id2)
+			if err != nil {
+				panic(err)
+			}
+
+			stateRoot1 := h1.StateRoot()
+			stateRoot2 := h2.StateRoot()
+
+			if n1 == 0 {
+				iroot1 = thor.Bytes32{}
+				stateRoot1 = thor.Bytes32{}
+			}
+
+			//index trie
+
+			itr1 := db.NewTrie("", iroot1, 0, false)
+			itr2 := db.NewTrie("", iroot2, 0, false)
+
+			iit1, err := itr1.NodeIterator(nil)
+			if err != nil {
+				panic(err)
+			}
+			iit2, err := itr2.NodeIterator(nil)
+			if err != nil {
+				panic(err)
+			}
+
+			idiff, _ := trie.NewDifferenceIterator(iit1, iit2)
+			for idiff.Next(true) {
+				if h := idiff.Hash(); !h.IsZero() {
+					data, err := idiff.Node()
+					if err != nil {
+						panic(err)
+					}
+					indexEntries++
+					if err := lowStore.Put(append(maturePrefix, h[:]...), data); err != nil {
+						panic(err)
+					}
+				}
+			}
+
+			fmt.Println("Pruner: index trie entries ", indexEntries)
+
+			tr1 := db.NewTrie("", stateRoot1, 0, false)
+			tr2 := db.NewTrie("", stateRoot2, 0, false)
+
+			it1, err := tr1.NodeIterator(nil)
+			if err != nil {
+				panic(err)
+			}
+			it2, err := tr2.NodeIterator(nil)
+			if err != nil {
+				panic(err)
+			}
+
+			diff, _ := trie.NewDifferenceIterator(it1, it2)
+			for diff.Next(true) {
+				if h := diff.Hash(); !h.IsZero() {
+					data, err := diff.Node()
+					if err != nil {
+						panic(err)
+					}
+					accEntries++
+					if err := lowStore.Put(append(maturePrefix, h[:]...), data); err != nil {
+						panic(err)
+					}
+				}
+
+				if diff.Leaf() {
+					blob2 := diff.LeafBlob()
+					var acc2 state.Account
+					if err := rlp.DecodeBytes(blob2, &acc2); err != nil {
+						panic(err)
+					}
+
+					if len(acc2.StorageRoot) > 0 {
+						sroot2 := thor.BytesToBytes32(acc2.StorageRoot)
+						blob1, err := tr1.Get(diff.LeafKey())
+						if err != nil {
+							panic(err)
+						}
+						var sroot1 thor.Bytes32
+						if len(blob1) > 0 {
+							var acc1 state.Account
+							if err := rlp.DecodeBytes(blob1, &acc1); err != nil {
+								panic(err)
+							}
+							sroot1 = thor.BytesToBytes32(acc1.StorageRoot)
+						}
+						sit1, err := db.NewTrie("s", sroot1, 0, false).NodeIterator(nil)
+						if err != nil {
+							panic(err)
+						}
+						sit2, err := db.NewTrie("s", sroot2, 0, false).NodeIterator(nil)
+						if err != nil {
+							panic(err)
+						}
+						sit, _ := trie.NewDifferenceIterator(sit1, sit2)
+						for sit.Next(true) {
+							if h := sit.Hash(); !h.IsZero() {
+								n, err := sit.Node()
+								if err != nil {
+									panic(err)
+								}
+								storageEntries++
+								if err := lowStore.Put(append(maturePrefix, h[:]...), n); err != nil {
+									panic(err)
+								}
+							}
+						}
+						if err := sit.Error(); err != nil {
+							panic(err)
+						}
+					}
+				}
+			}
+			fmt.Println("Pruner: account trie entries ", accEntries)
+			fmt.Println("Pruner: storage trie entries ", storageEntries)
+
+			for {
+				if chain.BestBlock().Header().Number() > n2+65536+20 {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+			fmt.Println("Pruner: deleting old spot...")
+
+			deleted := 0
+			if err := lowStore.Iterate(oldPrefix, func(key []byte, val []byte) error {
+				deleted++
+				return lowStore.Delete(key)
+			}); err != nil {
+
+				panic(err)
+
+			}
+
+			fmt.Println("Pruner: Compact")
+			rg := util.BytesPrefix(oldPrefix)
+			lowStore.Compact(rg.Start, rg.Limit)
+			fmt.Println("Pruner: Compact done")
+
+			fmt.Println("Pruner: delete entries:", deleted, ", mature:", indexEntries+accEntries+storageEntries, ", ratio:", float64((indexEntries+accEntries+storageEntries)*100)/float64(deleted), "%")
+
+		}
+	}()
 
 	// go func() {
 	// 	// prune index trie
@@ -241,248 +454,248 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 	// 		configStore.Put([]byte("index-trie-pruned"), kk[:])
 	// 	}
 	// }()
-	go func() {
-		var (
-			gen    = uint32(0)
-			ibloom = thor.NewBigBloom(64, 3)
-			abloom = thor.NewBigBloom(64, 3)
-			sbloom = thor.NewBigBloom(64, 3)
-		)
+	// go func() {
+	// 	var (
+	// 		gen    = uint32(0)
+	// 		ibloom = thor.NewBigBloom(64, 3)
+	// 		abloom = thor.NewBigBloom(64, 3)
+	// 		sbloom = thor.NewBigBloom(64, 3)
+	// 	)
 
-		v, _ := configStore.Get([]byte("state-pruned"))
-		if len(v) == 4 {
-			gen = binary.BigEndian.Uint32(v)
-		}
+	// 	v, _ := configStore.Get([]byte("state-pruned"))
+	// 	if len(v) == 4 {
+	// 		gen = binary.BigEndian.Uint32(v)
+	// 	}
 
-		for {
-			ibloom.Reset()
-			abloom.Reset()
-			sbloom.Reset()
-			for {
-				if chain.BestBlock().Header().Number() >= (gen+1)<<16+50 {
-					break
-				}
-				time.Sleep(time.Second)
-			}
-			n1 := gen << 16
-			n2 := (gen + 1) << 16
-			gen++
+	// 	for {
+	// 		ibloom.Reset()
+	// 		abloom.Reset()
+	// 		sbloom.Reset()
+	// 		for {
+	// 			if chain.BestBlock().Header().Number() >= (gen+1)<<16+50 {
+	// 				break
+	// 			}
+	// 			time.Sleep(time.Second)
+	// 		}
+	// 		n1 := gen << 16
+	// 		n2 := (gen + 1) << 16
+	// 		gen++
 
-			fmt.Printf("Pruner: start [%v, %v]\n", n1, n2)
+	// 		fmt.Printf("Pruner: start [%v, %v]\n", n1, n2)
 
-			id1, err := chain.NewTrunk().GetBlockID(n1)
-			if err != nil {
-				panic(err)
-			}
+	// 		id1, err := chain.NewTrunk().GetBlockID(n1)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
 
-			id2, err := chain.NewTrunk().GetBlockID(n2)
-			if err != nil {
-				panic(err)
-			}
+	// 		id2, err := chain.NewTrunk().GetBlockID(n2)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
 
-			h1, iroot1, err := chain.GetBlockHeader(id1)
-			if err != nil {
-				panic(err)
-			}
-			h2, iroot2, err := chain.GetBlockHeader(id2)
-			if err != nil {
-				panic(err)
-			}
+	// 		h1, iroot1, err := chain.GetBlockHeader(id1)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+	// 		h2, iroot2, err := chain.GetBlockHeader(id2)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
 
-			{
-				indexTrieEntries := 0
-				t1 := db.NewTrie("i", iroot1, n1, false)
-				it1, err := t1.NodeIterator(nil)
-				if err != nil {
-					panic(err)
-				}
-				it2, err := db.NewTrie("i", iroot2, n2, false).NodeIterator(nil)
-				if err != nil {
-					panic(err)
-				}
-				it, _ := trie.NewDifferenceIterator(it1, it2)
-				for it.Next(true) {
-					if h := it.Hash(); !h.IsZero() {
-						indexTrieEntries++
-						ibloom.Add(h)
-					}
-				}
-				if err := it.Error(); err != nil {
-					panic(err)
-				}
-				fmt.Println("Pruner: index trie entries", indexTrieEntries)
-				prefix := t1.Prefix()
+	// 		{
+	// 			indexTrieEntries := 0
+	// 			t1 := db.NewTrie("i", iroot1, n1, false)
+	// 			it1, err := t1.NodeIterator(nil)
+	// 			if err != nil {
+	// 				panic(err)
+	// 			}
+	// 			it2, err := db.NewTrie("i", iroot2, n2, false).NodeIterator(nil)
+	// 			if err != nil {
+	// 				panic(err)
+	// 			}
+	// 			it, _ := trie.NewDifferenceIterator(it1, it2)
+	// 			for it.Next(true) {
+	// 				if h := it.Hash(); !h.IsZero() {
+	// 					indexTrieEntries++
+	// 					ibloom.Add(h)
+	// 				}
+	// 			}
+	// 			if err := it.Error(); err != nil {
+	// 				panic(err)
+	// 			}
+	// 			fmt.Println("Pruner: index trie entries", indexTrieEntries)
+	// 			prefix := t1.Prefix()
 
-				fmt.Printf("Pruner: deleting prefix %x...\n", prefix)
-				scaned := 0
-				deleted := 0
+	// 			fmt.Printf("Pruner: deleting prefix %x...\n", prefix)
+	// 			scaned := 0
+	// 			deleted := 0
 
-				prefixLen := len(prefix)
+	// 			prefixLen := len(prefix)
 
-				lowStore := db.LowStore()
-				var tempKey [2 + 2 + 32]byte
+	// 			lowStore := db.LowStore()
+	// 			var tempKey [2 + 2 + 32]byte
 
-				lowStore.Iterate(prefix, func(key, val []byte) error {
-					scaned++
-					lowStore.Batch(func(w kv.Putter) error {
-						if ibloom.Test(thor.BytesToBytes32(key[prefixLen:])) {
-							copy(tempKey[:], key)
-							tempKey[1] = 255
-							tempKey[2] = 255
-							w.Put(tempKey[:], val)
-						} else {
-							deleted++
-						}
-						w.Delete(key)
-						return nil
-					})
-					return nil
-				})
+	// 			lowStore.Iterate(prefix, func(key, val []byte) error {
+	// 				scaned++
+	// 				lowStore.Batch(func(w kv.Putter) error {
+	// 					if ibloom.Test(thor.BytesToBytes32(key[prefixLen:])) {
+	// 						copy(tempKey[:], key)
+	// 						tempKey[1] = 255
+	// 						tempKey[2] = 255
+	// 						w.Put(tempKey[:], val)
+	// 					} else {
+	// 						deleted++
+	// 					}
+	// 					w.Delete(key)
+	// 					return nil
+	// 				})
+	// 				return nil
+	// 			})
 
-				fmt.Println("Pruner: deleted", deleted, "/", scaned, "entries  ", float64(deleted*100)/float64(scaned), "%")
-			}
+	// 			fmt.Println("Pruner: deleted", deleted, "/", scaned, "entries  ", float64(deleted*100)/float64(scaned), "%")
+	// 		}
 
-			accountTrieEntries := 0
-			storageTrieEntries := 0
+	// 		accountTrieEntries := 0
+	// 		storageTrieEntries := 0
 
-			tr1 := db.NewTrie("a", h1.StateRoot(), n1, false)
-			it1, err := tr1.NodeIterator(nil)
-			if err != nil {
-				panic(err)
-			}
-			tr2 := db.NewTrie("a", h2.StateRoot(), n2, false)
-			it2, err := tr2.NodeIterator(nil)
-			if err != nil {
-				panic(err)
-			}
+	// 		tr1 := db.NewTrie("a", h1.StateRoot(), n1, false)
+	// 		it1, err := tr1.NodeIterator(nil)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+	// 		tr2 := db.NewTrie("a", h2.StateRoot(), n2, false)
+	// 		it2, err := tr2.NodeIterator(nil)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
 
-			it, _ := trie.NewDifferenceIterator(it1, it2)
-			for it.Next(true) {
-				if h := it.Hash(); !h.IsZero() {
-					abloom.Add(h)
-					accountTrieEntries++
-				}
-				if it.Leaf() {
-					blob2 := it.LeafBlob()
-					var acc2 state.Account
-					if err := rlp.DecodeBytes(blob2, &acc2); err != nil {
-						panic(err)
-					}
+	// 		it, _ := trie.NewDifferenceIterator(it1, it2)
+	// 		for it.Next(true) {
+	// 			if h := it.Hash(); !h.IsZero() {
+	// 				abloom.Add(h)
+	// 				accountTrieEntries++
+	// 			}
+	// 			if it.Leaf() {
+	// 				blob2 := it.LeafBlob()
+	// 				var acc2 state.Account
+	// 				if err := rlp.DecodeBytes(blob2, &acc2); err != nil {
+	// 					panic(err)
+	// 				}
 
-					if len(acc2.StorageRoot) > 0 {
-						sroot2 := thor.BytesToBytes32(acc2.StorageRoot)
-						blob1, err := tr1.Get(it.LeafKey())
-						if err != nil {
-							panic(err)
-						}
-						var sroot1 thor.Bytes32
-						if len(blob1) > 0 {
-							var acc1 state.Account
-							if err := rlp.DecodeBytes(blob1, &acc1); err != nil {
-								panic(err)
-							}
-							sroot1 = thor.BytesToBytes32(acc1.StorageRoot)
-						}
-						sit1, err := db.NewTrie("s", sroot1, n1, false).NodeIterator(nil)
-						if err != nil {
-							panic(err)
-						}
-						sit2, err := db.NewTrie("s", sroot2, n2, false).NodeIterator(nil)
-						if err != nil {
-							panic(err)
-						}
-						sit, _ := trie.NewDifferenceIterator(sit1, sit2)
-						for sit.Next(true) {
-							if h := sit.Hash(); !h.IsZero() {
-								storageTrieEntries++
-								sbloom.Add(h)
-							}
-						}
-						if err := sit.Error(); err != nil {
-							panic(err)
-						}
-					}
-				}
-			}
-			if err := it.Error(); err != nil {
-				panic(err)
-			}
-			fmt.Println("Pruner: account trie entries", accountTrieEntries)
-			fmt.Println("Pruner: storage trie entries", storageTrieEntries)
+	// 				if len(acc2.StorageRoot) > 0 {
+	// 					sroot2 := thor.BytesToBytes32(acc2.StorageRoot)
+	// 					blob1, err := tr1.Get(it.LeafKey())
+	// 					if err != nil {
+	// 						panic(err)
+	// 					}
+	// 					var sroot1 thor.Bytes32
+	// 					if len(blob1) > 0 {
+	// 						var acc1 state.Account
+	// 						if err := rlp.DecodeBytes(blob1, &acc1); err != nil {
+	// 							panic(err)
+	// 						}
+	// 						sroot1 = thor.BytesToBytes32(acc1.StorageRoot)
+	// 					}
+	// 					sit1, err := db.NewTrie("s", sroot1, n1, false).NodeIterator(nil)
+	// 					if err != nil {
+	// 						panic(err)
+	// 					}
+	// 					sit2, err := db.NewTrie("s", sroot2, n2, false).NodeIterator(nil)
+	// 					if err != nil {
+	// 						panic(err)
+	// 					}
+	// 					sit, _ := trie.NewDifferenceIterator(sit1, sit2)
+	// 					for sit.Next(true) {
+	// 						if h := sit.Hash(); !h.IsZero() {
+	// 							storageTrieEntries++
+	// 							sbloom.Add(h)
+	// 						}
+	// 					}
+	// 					if err := sit.Error(); err != nil {
+	// 						panic(err)
+	// 					}
+	// 				}
+	// 			}
+	// 		}
+	// 		if err := it.Error(); err != nil {
+	// 			panic(err)
+	// 		}
+	// 		fmt.Println("Pruner: account trie entries", accountTrieEntries)
+	// 		fmt.Println("Pruner: storage trie entries", storageTrieEntries)
 
-			lowStore := db.LowStore()
+	// 		lowStore := db.LowStore()
 
-			sprefix := db.NewTrie("s", thor.Bytes32{}, n1, false).Prefix()
-			sprefixLen := len(sprefix)
-			var tempKey [2 + 2 + 32]byte
-			fmt.Printf("Pruner: deleting prefix %x...\n", sprefix)
-			sscaned := 0
-			sdeleted := 0
-			lowStore.Iterate(sprefix, func(key, val []byte) error {
-				sscaned++
-				lowStore.Batch(func(w kv.Putter) error {
-					if sbloom.Test(thor.BytesToBytes32(key[sprefixLen:])) {
-						copy(tempKey[:], key)
-						tempKey[1] = 255
-						tempKey[2] = 255
-						w.Put(tempKey[:], val)
-					} else {
-						sdeleted++
-					}
-					w.Delete(key)
-					return nil
-				})
-				return nil
-			})
+	// 		sprefix := db.NewTrie("s", thor.Bytes32{}, n1, false).Prefix()
+	// 		sprefixLen := len(sprefix)
+	// 		var tempKey [2 + 2 + 32]byte
+	// 		fmt.Printf("Pruner: deleting prefix %x...\n", sprefix)
+	// 		sscaned := 0
+	// 		sdeleted := 0
+	// 		lowStore.Iterate(sprefix, func(key, val []byte) error {
+	// 			sscaned++
+	// 			lowStore.Batch(func(w kv.Putter) error {
+	// 				if sbloom.Test(thor.BytesToBytes32(key[sprefixLen:])) {
+	// 					copy(tempKey[:], key)
+	// 					tempKey[1] = 255
+	// 					tempKey[2] = 255
+	// 					w.Put(tempKey[:], val)
+	// 				} else {
+	// 					sdeleted++
+	// 				}
+	// 				w.Delete(key)
+	// 				return nil
+	// 			})
+	// 			return nil
+	// 		})
 
-			fmt.Println("Pruner: storage deleted", sdeleted, "/", sscaned, "entries  ", float64(sdeleted*100)/float64(sscaned), "%")
+	// 		fmt.Println("Pruner: storage deleted", sdeleted, "/", sscaned, "entries  ", float64(sdeleted*100)/float64(sscaned), "%")
 
-			for {
-				if chain.BestBlock().Header().Number() >= (gen)<<16+65536+50 {
-					break
-				}
-				time.Sleep(time.Second)
-			}
+	// 		for {
+	// 			if chain.BestBlock().Header().Number() >= (gen)<<16+65536+50 {
+	// 				break
+	// 			}
+	// 			time.Sleep(time.Second)
+	// 		}
 
-			aprefix := db.NewTrie("a", thor.Bytes32{}, n1, false).Prefix()
+	// 		aprefix := db.NewTrie("a", thor.Bytes32{}, n1, false).Prefix()
 
-			fmt.Printf("Pruner: deleting prefix %x...\n", aprefix)
-			ascaned := 0
-			adeleted := 0
+	// 		fmt.Printf("Pruner: deleting prefix %x...\n", aprefix)
+	// 		ascaned := 0
+	// 		adeleted := 0
 
-			aprefixLen := len(aprefix)
+	// 		aprefixLen := len(aprefix)
 
-			lowStore.Iterate(aprefix, func(key, val []byte) error {
-				ascaned++
-				lowStore.Batch(func(w kv.Putter) error {
-					if abloom.Test(thor.BytesToBytes32(key[aprefixLen:])) {
-						copy(tempKey[:], key)
-						tempKey[1] = 255
-						tempKey[2] = 255
-						w.Put(tempKey[:], val)
-					} else {
-						adeleted++
-					}
-					w.Delete(key)
-					return nil
-				})
-				return nil
-			})
+	// 		lowStore.Iterate(aprefix, func(key, val []byte) error {
+	// 			ascaned++
+	// 			lowStore.Batch(func(w kv.Putter) error {
+	// 				if abloom.Test(thor.BytesToBytes32(key[aprefixLen:])) {
+	// 					copy(tempKey[:], key)
+	// 					tempKey[1] = 255
+	// 					tempKey[2] = 255
+	// 					w.Put(tempKey[:], val)
+	// 				} else {
+	// 					adeleted++
+	// 				}
+	// 				w.Delete(key)
+	// 				return nil
+	// 			})
+	// 			return nil
+	// 		})
 
-			fmt.Println("Pruner: account deleted", adeleted, "/", ascaned, "entries  ", float64(adeleted*100)/float64(ascaned), "%")
+	// 		fmt.Println("Pruner: account deleted", adeleted, "/", ascaned, "entries  ", float64(adeleted*100)/float64(ascaned), "%")
 
-			fmt.Println("Pruner: do compact")
+	// 		// fmt.Println("Pruner: do compact")
 
-			if err := lowStore.Compact([]byte{aprefix[0], 0, 0}, db.NewTrie("a", thor.Bytes32{}, n2, false).Prefix()[:3]); err != nil {
-				fmt.Println(err)
-			}
-			fmt.Println("Pruner: compact done")
+	// 		// if err := lowStore.Compact([]byte{aprefix[0], 0, 0}, db.NewTrie("a", thor.Bytes32{}, n2, false).Prefix()[:3]); err != nil {
+	// 		// 	fmt.Println(err)
+	// 		// }
+	// 		// fmt.Println("Pruner: compact done")
 
-			var kk [4]byte
-			binary.BigEndian.PutUint32(kk[:], gen)
-			configStore.Put([]byte("state-pruned"), kk[:])
-		}
-	}()
+	// 		var kk [4]byte
+	// 		binary.BigEndian.PutUint32(kk[:], gen)
+	// 		configStore.Put([]byte("state-pruned"), kk[:])
+	// 	}
+	// }()
 
 	return nil
 }

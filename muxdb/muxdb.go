@@ -2,6 +2,7 @@ package muxdb
 
 import (
 	"errors"
+	"sync"
 
 	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/thor"
@@ -12,11 +13,16 @@ var (
 	trieSlot          = byte(0)
 	trieSecureKeySlot = byte(1)
 	freeSlot          = byte(2)
+
+	dynamicSpots = [2]byte{0, 1}
+	matureSpot   = byte(2)
 )
 
 type MuxDB struct {
-	engine engine
-	cache  *cache
+	engine    engine
+	trieSpots trix
+	cache     *cache
+	lock      sync.Mutex
 }
 
 func New(path string, options *Options) (*MuxDB, error) {
@@ -24,10 +30,10 @@ func New(path string, options *Options) (*MuxDB, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	return &MuxDB{
-		db,
-		newCache(options.CacheSize * 3 / 4),
+		engine:    db,
+		trieSpots: trix{dynamicSpots[0], dynamicSpots[1], matureSpot},
+		cache:     newCache(options.CacheSize * 3 / 4),
 	}, nil
 }
 
@@ -37,28 +43,28 @@ func NewMem() (*MuxDB, error) {
 		return nil, err
 	}
 	return &MuxDB{
-		db,
-		nil,
+		engine:    db,
+		trieSpots: trix{dynamicSpots[0], dynamicSpots[1], matureSpot},
+		cache:     nil,
 	}, nil
 }
 
 func (m *MuxDB) NewTrie(name string, root thor.Bytes32, blockNum uint32, secure bool) Trie {
-	var (
-		rSeg = segment((blockNum - 1) >> 16)
-		wSeg = segment(blockNum >> 16)
-		bkt  = bucket{trieSlot}
-		nbkt = bucket([]byte(name))
-	)
+
+	bkt := bucket{trieSlot}
+	m.lock.Lock()
+	t := m.trieSpots
+	m.lock.Unlock()
 
 	raw, err := trie.New(root, struct {
 		getFunc
 		hasFunc
 		putFunc
 	}{
-		m.cache.ProxyGet(nbkt.ProxyGet(func(key []byte) ([]byte, error) {
+		m.cache.ProxyGet(func(key []byte) ([]byte, error) {
 			var val []byte
 			if err := m.engine.Snapshot(func(getter kv.Getter) error {
-				v, err := rSeg.ProxyGet(bkt.ProxyGet(getter.Get))(key)
+				v, err := t.ProxyGet(bkt.ProxyGet(getter.Get))(key)
 				if err != nil {
 					return err
 				}
@@ -68,7 +74,7 @@ func (m *MuxDB) NewTrie(name string, root thor.Bytes32, blockNum uint32, secure 
 				return nil, err
 			}
 			return val, nil
-		})),
+		}),
 		nil,
 		nil,
 	})
@@ -103,11 +109,9 @@ func (m *MuxDB) NewTrie(name string, root thor.Bytes32, blockNum uint32, secure 
 						}
 					}
 					secureKeyPreimages = nil
-					return fn(m.cache.ProxyPut(nbkt.ProxyPut(wSeg.ProxyPut(bkt.ProxyPut(putter.Put)))))
+					return fn(m.cache.ProxyPut(t.ProxyPut(bkt.ProxyPut(putter.Put))))
 				})
 			},
-			name,
-			wSeg,
 		}
 	}
 
@@ -117,12 +121,18 @@ func (m *MuxDB) NewTrie(name string, root thor.Bytes32, blockNum uint32, secure 
 		func(key []byte, save bool) []byte { return key },
 		func(fn func(putFunc) error) error {
 			return m.engine.Batch(func(putter kv.Putter) error {
-				return fn(m.cache.ProxyPut(nbkt.ProxyPut(wSeg.ProxyPut(bkt.ProxyPut(putter.Put)))))
+				return fn(m.cache.ProxyPut(t.ProxyPut(bkt.ProxyPut(putter.Put))))
 			})
 		},
-		name,
-		wSeg,
 	}
+}
+
+func (m *MuxDB) RollTrie(i int) ([]byte, []byte, []byte) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	m.trieSpots = trix{dynamicSpots[i%2], dynamicSpots[(i+1)%2], matureSpot}
+
+	return []byte{trieSlot, dynamicSpots[i%2]}, []byte{trieSlot, dynamicSpots[(i+1)%2]}, []byte{trieSlot, matureSpot}
 }
 
 func (m *MuxDB) NewStore(name string, doCache bool) kv.Store {
