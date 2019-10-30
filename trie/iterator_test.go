@@ -63,6 +63,7 @@ func TestIterator(t *testing.T) {
 	i := trie.NodeIterator(nil)
 	for i.Next(true) {
 		n, err := i.Node()
+
 		assert.Nil(t, err)
 		if h := i.Hash(); !h.IsZero() {
 			assert.Equal(t, h, thor.Blake2b(n))

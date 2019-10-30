@@ -53,6 +53,10 @@ type DatabaseWriter interface {
 	Put(key, value []byte) error
 }
 
+type PathHint interface {
+	Path(path []byte)
+}
+
 // Trie is a Merkle Patricia Trie.
 // The zero value is an empty trie with no database.
 // Use New to create a trie that sits on top of a database.
@@ -350,7 +354,7 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 				// shortNode{..., shortNode{...}}.  Since the entry
 				// might not be loaded yet, resolve it just for this
 				// check.
-				cnode, err := t.resolve(n.Children[pos], prefix)
+				cnode, err := t.resolve(n.Children[pos], append(prefix, byte(pos)))
 				if err != nil {
 					return false, nil, err
 				}
@@ -407,11 +411,17 @@ func (t *Trie) resolve(n node, prefix []byte) (node, error) {
 }
 
 func (t *Trie) resolveHash(n hashNode, prefix []byte) (node, []byte, error) {
+	if hint, ok := t.db.(PathHint); ok {
+		hint.Path(prefix)
+	}
 
 	enc, err := t.db.Get(n)
+
 	if err != nil || enc == nil {
+		panic(err)
 		return nil, nil, &MissingNodeError{NodeHash: thor.BytesToBytes32(n), Path: prefix}
 	}
+
 	dec := mustDecodeNode(n, enc)
 	return dec, enc, nil
 }
@@ -462,5 +472,5 @@ func (t *Trie) hashRoot(db DatabaseWriter) (node, node, error) {
 	}
 	h := newHasher()
 	defer returnHasherToPool(h)
-	return h.hash(t.root, db, true)
+	return h.hash(t.root, db, nil, true)
 }

@@ -32,7 +32,7 @@ func (co *cachedObject) getOrCreateStorageTrie() muxdb.Trie {
 	if co.cache.storageTrie == nil {
 		co.cache.storageTrie = co.db.NewTrie(
 			"s",
-			thor.BytesToBytes32(co.data.StorageRoot), co.blockNum,
+			thor.BytesToBytes32(co.data.StorageRoot),
 			true)
 	}
 	return co.cache.storageTrie

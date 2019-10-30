@@ -18,6 +18,7 @@ type trieWrap struct {
 	err     error
 	hashKey func(key []byte, save bool) []byte
 	batch   func(func(putFunc) error) error
+	path    func([]byte)
 }
 
 func (t *trieWrap) Get(key []byte) ([]byte, error) {
@@ -52,7 +53,13 @@ func (t *trieWrap) Commit() (thor.Bytes32, error) {
 	)
 
 	err = t.batch(func(put putFunc) error {
-		root, err = t.raw.CommitTo(struct{ putFunc }{put})
+		root, err = t.raw.CommitTo(struct {
+			putFunc
+			pathFunc
+		}{
+			put,
+			t.path,
+		})
 		return err
 	})
 

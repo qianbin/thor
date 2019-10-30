@@ -16,6 +16,7 @@ type snapshotFunc func(func(getter kv.Getter) error) error
 type batchFunc func(func(putter kv.Putter) error) error
 type iterateFunc func(prefix []byte, fn func(key, val []byte) error) error
 type compactFunc func(from, to []byte) error
+type pathFunc func(path []byte)
 
 func (f getFunc) Get(key []byte) ([]byte, error)               { return f(key) }
 func (f hasFunc) Has(key []byte) (bool, error)                 { return f(key) }
@@ -28,3 +29,4 @@ func (f iterateFunc) Iterate(prefix []byte, fn func(key, val []byte) error) erro
 	return f(prefix, fn)
 }
 func (f compactFunc) Compact(from, to []byte) error { return f(from, to) }
+func (f pathFunc) Path(path []byte)                 { f(path) }

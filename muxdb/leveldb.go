@@ -13,7 +13,7 @@ import (
 var (
 	writeOpt = opt.WriteOptions{}
 	readOpt  = opt.ReadOptions{
-		DontTriggerCompaction: true,
+		// DontTriggerCompaction: true,
 	}
 
 	_ engine = (*levelDB)(nil)
@@ -38,13 +38,12 @@ func openLevelDB(
 	}
 
 	db, err := leveldb.OpenFile(path, &opt.Options{
-
-		CompactionTableSizeMultiplier: 2,
-		OpenFilesCacheCapacity:        fileDescriptorCache,
-		BlockCacheCapacity:            cacheSize / 2 * opt.MiB,
-		WriteBuffer:                   cacheSize / 4 * opt.MiB, // Two of these are used internally
-		Filter:                        filter.NewBloomFilter(10),
-		DisableSeeksCompaction:        true,
+		// CompactionTableSizeMultiplier: 2,
+		OpenFilesCacheCapacity: fileDescriptorCache,
+		BlockCacheCapacity:     cacheSize / 2 * opt.MiB,
+		WriteBuffer:            cacheSize / 4 * opt.MiB, // Two of these are used internally
+		Filter:                 filter.NewBloomFilter(10),
+		DisableSeeksCompaction: true,
 	})
 
 	if _, corrupted := err.(*dberrors.ErrCorrupted); corrupted {

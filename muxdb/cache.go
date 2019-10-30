@@ -1,33 +1,24 @@
 package muxdb
 
 import (
-	"time"
-
-	"github.com/allegro/bigcache"
+	"github.com/coocood/freecache"
 	"github.com/vechain/thor/kv"
 )
 
 type cache struct {
-	bigcache *bigcache.BigCache
+	fc *freecache.Cache
 }
 
 func newCache(maxSizeMB int) *cache {
-	bigcache, _ := bigcache.NewBigCache(bigcache.Config{
-		Shards:             1024,
-		LifeWindow:         time.Hour * 24 * 7,
-		MaxEntriesInWindow: maxSizeMB * 1024,
-		MaxEntrySize:       512,
-		HardMaxCacheSize:   maxSizeMB,
-	})
-	return &cache{bigcache}
+	return &cache{freecache.NewCache(1024 * 1024 * maxSizeMB)}
 }
 
-func (c *cache) ProxyGet(get getFunc) getFunc {
+func (c *cache) ProxyGet(get getFunc, dontFillCache bool) getFunc {
 	if c == nil {
 		return get
 	}
 	return func(key []byte) ([]byte, error) {
-		val, err := c.bigcache.Get(string(key))
+		val, err := c.fc.Get(key)
 		if err == nil {
 			return val, nil
 		}
@@ -36,8 +27,9 @@ func (c *cache) ProxyGet(get getFunc) getFunc {
 		if err != nil {
 			return nil, err
 		}
-
-		c.bigcache.Set(string(key), val)
+		if !dontFillCache {
+			c.fc.Set(key, val, 0)
+		}
 		return val, nil
 	}
 }
@@ -50,7 +42,7 @@ func (c *cache) ProxyPut(put putFunc) putFunc {
 		if err := put(key, val); err != nil {
 			return err
 		}
-		c.bigcache.Set(string(key), val)
+		c.fc.Set(key, val, 0)
 		return nil
 	}
 }
@@ -63,7 +55,8 @@ func (c *cache) ProxyDelete(del deleteFunc) deleteFunc {
 		if err := del(key); err != nil {
 			return err
 		}
-		c.bigcache.Delete(string(key))
+
+		c.fc.Del(key)
 		return nil
 	}
 }
@@ -76,7 +69,7 @@ func (c *cache) ProxyGetter(getter kv.Getter) kv.Getter {
 		getFunc
 		hasFunc
 	}{
-		c.ProxyGet(getter.Get),
+		c.ProxyGet(getter.Get, false),
 		getter.Has,
 	}
 }

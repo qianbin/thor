@@ -28,7 +28,7 @@ type codeWithHash struct {
 
 func newStage(db *muxdb.MuxDB, root thor.Bytes32, changes map[thor.Address]*changedObject, blockNum uint32) *Stage {
 
-	accountTrie := db.NewTrie("a", root, blockNum, true)
+	accountTrie := db.NewTrie("a", root, true)
 
 	storageTries := make([]muxdb.Trie, 0, len(changes))
 	codes := make([]codeWithHash, 0, len(changes))
@@ -45,7 +45,7 @@ func newStage(db *muxdb.MuxDB, root thor.Bytes32, changes map[thor.Address]*chan
 		// skip storage changes if account is empty
 		if !dataCpy.IsEmpty() {
 			if len(obj.storage) > 0 {
-				strie := db.NewTrie("s", thor.BytesToBytes32(dataCpy.StorageRoot), blockNum, true)
+				strie := db.NewTrie("s", thor.BytesToBytes32(dataCpy.StorageRoot), true)
 				storageTries = append(storageTries, strie)
 				for k, v := range obj.storage {
 					if err := strie.Update(k[:], v); err != nil {

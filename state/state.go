@@ -34,7 +34,7 @@ func New(db *muxdb.MuxDB, root thor.Bytes32, blockNum uint32) *State {
 	state := State{
 		db:       db,
 		root:     root,
-		trie:     db.NewTrie("a", root, blockNum, true),
+		trie:     db.NewTrie("a", root, true),
 		cache:    make(map[thor.Address]*cachedObject),
 		blockNum: blockNum,
 	}
@@ -349,7 +349,7 @@ func (s *State) RevertTo(revision int) {
 func (s *State) BuildStorageTrie(addr thor.Address) (muxdb.Trie, error) {
 	acc := s.getAccount(addr)
 
-	trie := s.db.NewTrie("s", thor.BytesToBytes32(acc.StorageRoot), s.blockNum, true)
+	trie := s.db.NewTrie("s", thor.BytesToBytes32(acc.StorageRoot), true)
 	// traverse journal to filter out storage changes for addr
 	s.sm.Journal(func(k, v interface{}) bool {
 		switch key := k.(type) {
