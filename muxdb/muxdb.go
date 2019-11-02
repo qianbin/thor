@@ -22,7 +22,7 @@ var (
 
 type MuxDB struct {
 	engine    engine
-	trieSpots trix
+	trieSpots map[string]trix
 	cache     *cache
 	lock      sync.Mutex
 }
@@ -47,7 +47,7 @@ func New(path string, options *Options) (*MuxDB, error) {
 	}()
 	return &MuxDB{
 		engine:    db,
-		trieSpots: trix{dynamicSpots[0], dynamicSpots[1], matureSpot},
+		trieSpots: make(map[string]trix),
 		cache:     c,
 	}, nil
 }
@@ -59,7 +59,7 @@ func NewMem() (*MuxDB, error) {
 	}
 	return &MuxDB{
 		engine:    db,
-		trieSpots: trix{dynamicSpots[0], dynamicSpots[1], matureSpot},
+		trieSpots: make(map[string]trix),
 		cache:     nil,
 	}, nil
 }
@@ -88,7 +88,10 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 
 	bkt := append(bucket{trieSlot}, []byte(name)...)
 	m.lock.Lock()
-	t := m.trieSpots
+	t, ok := m.trieSpots[name]
+	if !ok {
+		t = trix{dynamicSpots[0], dynamicSpots[1], matureSpot}
+	}
 	m.lock.Unlock()
 
 	var path []byte
@@ -182,7 +185,7 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 func (m *MuxDB) RollTrie(name string, i int) ([]byte, []byte, []byte) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	m.trieSpots = trix{dynamicSpots[i%2], dynamicSpots[(i+1)%2], matureSpot}
+	m.trieSpots[name] = trix{dynamicSpots[i%2], dynamicSpots[(i+1)%2], matureSpot}
 
 	return append(append([]byte{trieSlot}, []byte(name)...), dynamicSpots[i%2]),
 		append(append([]byte{trieSlot}, []byte(name)...), dynamicSpots[(i+1)%2]),

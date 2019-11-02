@@ -20,7 +20,10 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
+	lru "github.com/hashicorp/golang-lru"
 )
+
+var bitmapCache, _ = lru.NewARC(512)
 
 // destinations stores one map per contract (keyed by hash of code).
 // The maps contain an entry for each location of a JUMPDEST
@@ -38,7 +41,12 @@ func (d destinations) has(codehash common.Hash, code []byte, dest *big.Int) bool
 
 	m, analysed := d[codehash]
 	if !analysed {
-		m = codeBitmap(code)
+		if cached, ok := bitmapCache.Get(codehash); ok {
+			m = cached.(bitvec)
+		} else {
+			m = codeBitmap(code)
+			bitmapCache.Add(codehash, m)
+		}
 		d[codehash] = m
 	}
 	return OpCode(code[udest]) == JUMPDEST && m.codeSegment(udest)

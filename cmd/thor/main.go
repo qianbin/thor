@@ -826,6 +826,37 @@ func defaultAction(ctx *cli.Context) error {
 	defer func() { log.Info("closing log database..."); logDB.Close() }()
 
 	chain := initChain(gene, mainDB, logDB)
+	// cons := consensus.New(chain, mainDB, forkConfig)
+	// for i := uint32(2165914); i < chain.BestBlock().Header().Number(); i++ {
+	// 	blk, err := chain.NewTrunk().GetBlock(i)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	_, _, err = cons.Process(blk, blk.Header().Timestamp())
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// }
+	// return nil
+
+	// go func() {
+	// 	defer profile.Start().Stop()
+	// 	time.Sleep(time.Minute)
+	// }()
+	// cons := consensus.New(chain, mainDB, forkConfig)
+
+	// for i := uint32(0); i < 10000; i++ {
+	// 	blk, err := chain.NewTrunk().GetBlock(3401001)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	_, _, err = cons.Process(blk, blk.Header().Timestamp())
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// }
+	// slow #2407590…2d9049c5 low gps
+	// profile 3189578 3363312 3358737 3363306
 
 	// b := chain.NewBranch(chain.BestBlock().Header().ID())
 	// n := chain.BestBlock().Header().Number()

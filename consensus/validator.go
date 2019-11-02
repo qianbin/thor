@@ -31,7 +31,8 @@ func (c *Consensus) validate(
 		return nil, nil, err
 	}
 
-	if err := c.validateProposer(header, parentHeader, state); err != nil {
+	cacheEntry, err := c.validateProposer(header, parentHeader, state)
+	if err != nil {
 		return nil, nil, err
 	}
 
@@ -42,6 +43,29 @@ func (c *Consensus) validate(
 	stage, receipts, err := c.verifyBlock(block, state)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	entryDirty := false
+DONE:
+	for _, r := range receipts {
+		for _, o := range r.Outputs {
+			for _, e := range o.Events {
+				if e.Address == builtin.Params.Address || e.Address == builtin.Authority.Address {
+					entryDirty = true
+					break DONE
+				}
+			}
+			for _, t := range o.Transfers {
+				if cacheEntry.Contains(t.Sender) || cacheEntry.Contains(t.Recipient) {
+					entryDirty = true
+					break DONE
+				}
+			}
+		}
+	}
+
+	if !entryDirty {
+		c.poaCache.Set(header.ID(), cacheEntry)
 	}
 
 	return stage, receipts, nil
@@ -74,43 +98,57 @@ func (c *Consensus) validateBlockHeader(header *block.Header, parent *block.Head
 	return nil
 }
 
-func (c *Consensus) validateProposer(header *block.Header, parent *block.Header, st *state.State) error {
+func (c *Consensus) validateProposer(header *block.Header, parent *block.Header, st *state.State) (*poaCacheEntry, error) {
 	signer, err := header.Signer()
 	if err != nil {
-		return consensusError(fmt.Sprintf("block signer unavailable: %v", err))
+		return nil, consensusError(fmt.Sprintf("block signer unavailable: %v", err))
 	}
-
 	authority := builtin.Authority.Native(st)
-	endorsement := builtin.Params.Native(st).Get(thor.KeyProposerEndorsement)
 
-	candidates := authority.Candidates(endorsement, thor.MaxBlockProposers)
-	proposers := make([]poa.Proposer, 0, len(candidates))
-	for _, c := range candidates {
-		proposers = append(proposers, poa.Proposer{
-			Address: c.NodeMaster,
-			Active:  c.Active,
-		})
+	cacheEntry := c.poaCache.Get(parent.ID())
+	if cacheEntry != nil {
+		cacheEntry = cacheEntry.Copy()
+	} else {
+		endorsement := builtin.Params.Native(st).Get(thor.KeyProposerEndorsement)
+
+		candidates := authority.AllCandidates()
+		proposers := make([]poa.Proposer, 0, len(candidates))
+
+		for _, c := range candidates {
+			if uint64(len(proposers)) >= thor.MaxBlockProposers {
+				break
+			}
+			if bal := st.GetBalance(c.Endorsor); bal.Cmp(endorsement) < 0 {
+				continue
+			}
+			proposers = append(proposers, poa.Proposer{
+				Address: c.NodeMaster,
+				Active:  c.Active,
+			})
+		}
+		cacheEntry = newPOACacheEntry(proposers, candidates)
 	}
 
-	sched, err := poa.NewScheduler(signer, proposers, parent.Number(), parent.Timestamp())
+	sched, err := poa.NewScheduler(signer, cacheEntry.proposers, parent.Number(), parent.Timestamp())
 	if err != nil {
-		return consensusError(fmt.Sprintf("block signer invalid: %v %v", signer, err))
+		return nil, consensusError(fmt.Sprintf("block signer invalid: %v %v", signer, err))
 	}
 
 	if !sched.IsTheTime(header.Timestamp()) {
-		return consensusError(fmt.Sprintf("block timestamp unscheduled: t %v, s %v", header.Timestamp(), signer))
+		return nil, consensusError(fmt.Sprintf("block timestamp unscheduled: t %v, s %v", header.Timestamp(), signer))
 	}
 
 	updates, score := sched.Updates(header.Timestamp())
 	if parent.TotalScore()+score != header.TotalScore() {
-		return consensusError(fmt.Sprintf("block total score invalid: want %v, have %v", parent.TotalScore()+score, header.TotalScore()))
+		return nil, consensusError(fmt.Sprintf("block total score invalid: want %v, have %v", parent.TotalScore()+score, header.TotalScore()))
 	}
 
-	for _, proposer := range updates {
-		authority.Update(proposer.Address, proposer.Active)
+	for _, u := range updates {
+		authority.Update(u.Address, u.Active)
+		cacheEntry.Update(u.Address, u.Active)
 	}
 
-	return nil
+	return cacheEntry, nil
 }
 
 func (c *Consensus) validateBlockBody(blk *block.Block) error {

@@ -18,6 +18,9 @@ package trie
 
 import (
 	"bytes"
+	"encoding/binary"
+	"fmt"
+	"math/rand"
 	"runtime"
 	"sync"
 	"testing"
@@ -64,6 +67,10 @@ func makeTestSecureTrie() (ethdb.Database, *SecureTrie, map[string][]byte) {
 	return db, trie, content
 }
 
+type putFunc func([]byte, []byte) error
+
+func (f putFunc) Put(k, v []byte) error { return f(k, v) }
+
 func TestSecureDelete(t *testing.T) {
 	trie := newEmptySecure()
 	vals := []struct{ k, v string }{
@@ -88,6 +95,61 @@ func TestSecureDelete(t *testing.T) {
 	if hash != exp {
 		t.Errorf("expected %v got %v", exp, hash)
 	}
+
+	trie1 := newEmpty()
+	trie2 := newEmpty()
+	n1 := 0
+	n2 := 0
+
+	// for i := 0; i < 10000; i++ {
+	// 	var k, v [32]byte
+	// 	rand.Read(k[:])
+	// 	rand.Read(v[:])
+	// 	trie1.Update(k[:], v[:])
+	// 	trie2.Update(k[:], v[:])
+	// 	trie1.CommitTo(putFunc(func(k, v []byte) error {
+	// 		n1++
+	// 		return nil
+	// 	}))
+	// 	trie2.CommitTo(putFunc(func(k, v []byte) error {
+	// 		n2++
+	// 		return nil
+	// 	}))
+	// }
+
+	for i := 0; i < 10000; i++ {
+		var k4 [4]byte
+		var k32, v [32]byte
+		rand.Read(k32[:])
+		rand.Read(v[:])
+		binary.BigEndian.PutUint32(k4[:], uint32(i))
+		trie1.Update(k4[:], v[:])
+		trie2.Update(k32[:], v[:])
+		trie1.CommitTo(putFunc(func(k, v []byte) error {
+			n1++
+			return nil
+		}))
+		trie2.CommitTo(putFunc(func(k, v []byte) error {
+			n2++
+			return nil
+		}))
+	}
+
+	// it := trie1.NodeIterator(nil)
+	// i1 := 0
+	// for it.Next(true) {
+	// 	if h := it.Hash(); !h.IsZero() {
+	// 		i1++
+	// 	}
+	// }
+	// it = trie2.NodeIterator(nil)
+	// i2 := 0
+	// for it.Next(true) {
+	// 	if h := it.Hash(); !h.IsZero() {
+	// 		i2++
+	// 	}
+	// }
+	fmt.Println(n1, n2)
 }
 
 func TestSecureGetKey(t *testing.T) {

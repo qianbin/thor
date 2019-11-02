@@ -26,6 +26,7 @@ type Consensus struct {
 	db                   *muxdb.MuxDB
 	forkConfig           thor.ForkConfig
 	correctReceiptsRoots map[string]string
+	poaCache             *poaCache
 }
 
 // New create a Consensus instance.
@@ -35,6 +36,7 @@ func New(chain *chain.Chain, db *muxdb.MuxDB, forkConfig thor.ForkConfig) *Conse
 		db:                   db,
 		forkConfig:           forkConfig,
 		correctReceiptsRoots: thor.LoadCorrectReceiptsRoots(),
+		poaCache:             newPOACache(16),
 	}
 }
 
@@ -42,13 +44,13 @@ func New(chain *chain.Chain, db *muxdb.MuxDB, forkConfig thor.ForkConfig) *Conse
 func (c *Consensus) Process(blk *block.Block, nowTimestamp uint64) (*state.Stage, tx.Receipts, error) {
 	header := blk.Header()
 
-	if _, _, err := c.chain.GetBlockHeader(header.ID()); err != nil {
-		if !c.chain.IsNotFound(err) {
-			return nil, nil, err
-		}
-	} else {
-		return nil, nil, errKnownBlock
-	}
+	// if _, _, err := c.chain.GetBlockHeader(header.ID()); err != nil {
+	// 	if !c.chain.IsNotFound(err) {
+	// 		return nil, nil, err
+	// 	}
+	// } else {
+	// 	return nil, nil, errKnownBlock
+	// }
 
 	parentHeader, _, err := c.chain.GetBlockHeader(header.ParentID())
 	if err != nil {
@@ -101,7 +103,7 @@ func (c *Consensus) NewRuntimeForReplay(header *block.Header, skipPoA bool) (*ru
 	state := state.New(c.db, parentHeader.StateRoot(), parentHeader.Number())
 
 	if !skipPoA {
-		if err := c.validateProposer(header, parentHeader, state); err != nil {
+		if _, err := c.validateProposer(header, parentHeader, state); err != nil {
 			return nil, err
 		}
 	}
