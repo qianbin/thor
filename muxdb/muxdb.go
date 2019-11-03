@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	lru "github.com/hashicorp/golang-lru"
 	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/trie"
@@ -20,11 +21,31 @@ var (
 	matureSpot   = byte(2)
 )
 
+type nodeCache struct {
+	lru *lru.Cache
+}
+
+func (nc *nodeCache) Get(key []byte) interface{} {
+	if nc == nil {
+		return nil
+	}
+	v, _ := nc.lru.Get(string(key))
+	return v
+}
+func (nc *nodeCache) Set(key []byte, val interface{}) {
+	if nc == nil {
+		return
+	}
+	nc.lru.Add(string(key), val)
+}
+
 type MuxDB struct {
 	engine    engine
 	trieSpots map[string]trix
 	cache     *cache
 	lock      sync.Mutex
+
+	nodeCache *nodeCache
 }
 
 func New(path string, options *Options) (*MuxDB, error) {
@@ -45,10 +66,12 @@ func New(path string, options *Options) (*MuxDB, error) {
 				c.fc.HitRate())
 		}
 	}()
+	lru, _ := lru.New(65536)
 	return &MuxDB{
 		engine:    db,
 		trieSpots: make(map[string]trix),
 		cache:     c,
+		nodeCache: &nodeCache{lru},
 	}, nil
 }
 
@@ -94,31 +117,43 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 	}
 	m.lock.Unlock()
 
-	var path []byte
 	raw, err := trie.New(root, struct {
 		getFunc
 		hasFunc
 		putFunc
-		pathFunc
+		getExFunc
 	}{
-		m.cache.ProxyGet(func(key []byte) ([]byte, error) {
-			var val []byte
-			if err := m.engine.Snapshot(func(getter kv.Getter) error {
-				v, err := t.ProxyGet(bkt.ProxyGet(getter.Get))(makeHashKey(key, path))
-				if err != nil {
-					return err
+		nil,
+		nil,
+		nil,
+		func(key, path []byte, decode func([]byte) interface{}) ([]byte, interface{}, error) {
+			enc, err := m.cache.ProxyGet(func(key []byte) ([]byte, error) {
+				var val []byte
+				if err := m.engine.Snapshot(func(getter kv.Getter) error {
+					v, err := t.ProxyGet(bkt.ProxyGet(getter.Get))(makeHashKey(key, path))
+					if err != nil {
+						return err
+					}
+					val = v
+					return nil
+				}); err != nil {
+					return nil, err
 				}
-				val = v
-				return nil
-			}); err != nil {
-				return nil, err
+				return val, nil
+			}, dontFillCache)(key)
+
+			if err != nil {
+				return nil, nil, err
 			}
-			return val, nil
-		}, dontFillCache),
-		nil,
-		nil,
-		func(p []byte) {
-			path = p
+
+			if dec := m.nodeCache.Get(key); dec != nil {
+				return enc, dec, nil
+			}
+
+			dec := decode(enc)
+			m.nodeCache.Set(key, dec)
+
+			return enc, dec, nil
 		},
 	})
 
@@ -143,7 +178,7 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 				}
 				return hash[:]
 			},
-			func(fn func(putFunc) error) error {
+			func(fn func(putExFunc) error) error {
 				return m.engine.Batch(func(putter kv.Putter) error {
 					saveSecureKey := bucket{trieSecureKeySlot}.ProxyPut(putter.Put)
 					for h, p := range secureKeyPreimages {
@@ -153,13 +188,13 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 					}
 					secureKeyPreimages = nil
 					x := t.ProxyPut(bkt.ProxyPut(putter.Put))
-					return fn(m.cache.ProxyPut(func(k, v []byte) error {
-						return x(makeHashKey(k, path), v)
-					}))
+					return fn(func(key, path, val []byte, dec interface{}) error {
+						m.nodeCache.Set(key, dec)
+						return m.cache.ProxyPut(func(k, v []byte) error {
+							return x(makeHashKey(k, path), v)
+						})(key, val)
+					})
 				})
-			},
-			func(p []byte) {
-				path = p
 			},
 		}
 	}
@@ -168,16 +203,16 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 		raw,
 		err,
 		func(key []byte, save bool) []byte { return key },
-		func(fn func(putFunc) error) error {
+		func(fn func(putExFunc) error) error {
 			return m.engine.Batch(func(putter kv.Putter) error {
 				x := t.ProxyPut(bkt.ProxyPut(putter.Put))
-				return fn(m.cache.ProxyPut(func(k, v []byte) error {
-					return x(makeHashKey(k, path), v)
-				}))
+				return fn(func(key, path, val []byte, dec interface{}) error {
+					m.nodeCache.Set(key, dec)
+					return m.cache.ProxyPut(func(k, v []byte) error {
+						return x(makeHashKey(k, path), v)
+					})(key, val)
+				})
 			})
-		},
-		func(p []byte) {
-			path = p
 		},
 	}
 }

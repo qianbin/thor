@@ -166,8 +166,11 @@ func (it *nodeIterator) Node() ([]byte, error) {
 		return nil, nil
 	}
 
-	if hint, ok := it.trie.db.(PathHint); ok {
-		hint.Path(it.path)
+	if ex, ok := it.trie.db.(ReaderEx); ok {
+		enc, _, err := ex.GetEx(st.hash[:], it.path, func(enc []byte) interface{} {
+			return mustDecodeNode(st.hash[:], enc)
+		})
+		return enc, err
 	}
 	return it.trie.db.Get(st.hash[:])
 }

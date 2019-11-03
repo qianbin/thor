@@ -53,8 +53,11 @@ type DatabaseWriter interface {
 	Put(key, value []byte) error
 }
 
-type PathHint interface {
-	Path(path []byte)
+type ReaderEx interface {
+	GetEx(key, path []byte, decode func(enc []byte) interface{}) ([]byte, interface{}, error)
+}
+type WriterEx interface {
+	PutEx(key, path, value []byte, dec interface{}) error
 }
 
 // Trie is a Merkle Patricia Trie.
@@ -411,19 +414,27 @@ func (t *Trie) resolve(n node, prefix []byte) (node, error) {
 }
 
 func (t *Trie) resolveHash(n hashNode, prefix []byte) (node, []byte, error) {
-	if hint, ok := t.db.(PathHint); ok {
-		hint.Path(prefix)
+	var (
+		enc []byte
+		dec interface{}
+		err error
+	)
+	if ex, ok := t.db.(ReaderEx); ok {
+		enc, dec, err = ex.GetEx(n, prefix, func(enc []byte) interface{} {
+			return mustDecodeNode(n, enc)
+		})
+	} else {
+		enc, err = t.db.Get(n)
 	}
 
-	enc, err := t.db.Get(n)
-
 	if err != nil || enc == nil {
-		panic(err)
 		return nil, nil, &MissingNodeError{NodeHash: thor.BytesToBytes32(n), Path: prefix}
 	}
 
-	dec := mustDecodeNode(n, enc)
-	return dec, enc, nil
+	if dec != nil {
+		return dec.(node), enc, nil
+	}
+	return mustDecodeNode(n, enc), enc, nil
 }
 
 // Root returns the root hash of the trie.

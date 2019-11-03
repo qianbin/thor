@@ -178,8 +178,8 @@ func (h *hasher) store(n node, db DatabaseWriter, path []byte, force bool) (node
 		hash = hashNode(h.sha.Sum(nil))
 	}
 	if db != nil {
-		if hint, ok := db.(PathHint); ok {
-			hint.Path(path)
+		if ex, ok := db.(WriterEx); ok {
+			return hash, ex.PutEx(hash, path, h.tmp, mustDecodeNode(hash, h.tmp))
 		}
 		return hash, db.Put(hash, h.tmp)
 	}
