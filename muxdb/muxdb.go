@@ -109,9 +109,9 @@ func (m *MuxDB) NewTrieNoFillCache(name string, root thor.Bytes32, secure bool) 
 
 func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCache bool) Trie {
 
-	bkt := append(bucket{trieSlot}, []byte(name)...)
+	bkt := bucket{trieSlot} //append(bucket{trieSlot}, []byte(name)...)
 	m.lock.Lock()
-	t, ok := m.trieSpots[name]
+	t, ok := m.trieSpots["x"]
 	if !ok {
 		t = trix{dynamicSpots[0], dynamicSpots[1], matureSpot}
 	}
@@ -151,7 +151,9 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 			}
 
 			dec := decode(enc)
-			m.nodeCache.Set(key, dec)
+			if !dontFillCache {
+				m.nodeCache.Set(key, dec)
+			}
 
 			return enc, dec, nil
 		},
@@ -217,14 +219,14 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 	}
 }
 
-func (m *MuxDB) RollTrie(name string, i int) ([]byte, []byte, []byte) {
+func (m *MuxDB) RollTrie(i int) ([]byte, []byte, []byte) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	m.trieSpots[name] = trix{dynamicSpots[i%2], dynamicSpots[(i+1)%2], matureSpot}
+	m.trieSpots["x"] = trix{dynamicSpots[i%2], dynamicSpots[(i+1)%2], matureSpot}
 
-	return append(append([]byte{trieSlot}, []byte(name)...), dynamicSpots[i%2]),
-		append(append([]byte{trieSlot}, []byte(name)...), dynamicSpots[(i+1)%2]),
-		append(append([]byte{trieSlot}, []byte(name)...), matureSpot)
+	return []byte{trieSlot, dynamicSpots[i%2]},
+		[]byte{trieSlot, dynamicSpots[(i+1)%2]},
+		[]byte{trieSlot, matureSpot}
 }
 
 func (m *MuxDB) NewStore(name string, doCache bool) kv.Store {

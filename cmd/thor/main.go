@@ -158,25 +158,28 @@ func makeHashKey(hash []byte, path []byte) []byte {
 }
 func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 	lowStore := db.LowStore()
+
 	go func() {
 		var (
 			n1       = uint32(0)
 			n2       = uint32(0)
 			rollingI = 0
 		)
+
 		for {
 			n1 = n2
 
 			for {
-				if chain.BestBlock().Header().Number() > n1+100000 {
+				if chain.BestBlock().Header().Number() > n1+65536 {
 					break
 				}
 				time.Sleep(time.Second)
 			}
 
 			rollingI++
-			newPrefix, oldPrefix, maturePrefix := db.RollTrie("i", rollingI)
-			fmt.Printf("Pruner: indexTrie %x %x %x\n", newPrefix, oldPrefix, maturePrefix)
+			newPrefix, oldPrefix, maturePrefix := db.RollTrie(rollingI)
+
+			fmt.Printf("Pruner: rolling to prefix %x %x %x\n", newPrefix, oldPrefix, maturePrefix)
 			n2 = chain.BestBlock().Header().Number() + 20
 
 			for {
@@ -186,9 +189,10 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 				time.Sleep(time.Second)
 			}
 
-			fmt.Printf("Pruner: indexTrie start [%v, %v]\n", n1, n2)
-
+			fmt.Printf("Pruner: start [%v, %v]\n", n1, n2)
 			indexEntries := 0
+			accEntries := 0
+			storageEntries := 0
 
 			id1, err := chain.NewTrunk().GetBlockID(n1)
 			if err != nil {
@@ -199,21 +203,15 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 				panic(err)
 			}
 
-			_, iroot1, err := chain.GetBlockHeader(id1)
+			h1, iroot1, err := chain.GetBlockHeader(id1)
 			if err != nil {
 				panic(err)
 			}
 
-			_, iroot2, err := chain.GetBlockHeader(id2)
+			h2, iroot2, err := chain.GetBlockHeader(id2)
 			if err != nil {
 				panic(err)
 			}
-
-			if n1 == 0 {
-				iroot1 = thor.Bytes32{}
-			}
-
-			//index trie
 
 			itr1 := db.NewTrieNoFillCache("i", iroot1, false)
 			itr2 := db.NewTrieNoFillCache("i", iroot2, false)
@@ -241,79 +239,7 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 				}
 			}
 
-			fmt.Println("Pruner: indexTrie entries ", indexEntries, ", deleting old spot ...")
-
-			deleted := 0
-			if err := lowStore.Iterate(oldPrefix, func(key []byte, val []byte) error {
-				deleted++
-				return lowStore.Delete(key)
-			}); err != nil {
-				panic(err)
-			}
-
-			// fmt.Println("Pruner: Compact")
-			// rg := util.BytesPrefix(oldPrefix)
-			// lowStore.Compact(rg.Start, rg.Limit)
-			// fmt.Println("Pruner: Compact done")
-
-			fmt.Println("Pruner: indexTrie delete entries:", deleted, ", mature:", indexEntries, ", ratio:", float64(indexEntries*100)/float64(deleted), "%")
-
-		}
-
-	}()
-
-	go func() {
-		var (
-			n1       = uint32(0)
-			n2       = uint32(0)
-			rollingI = 0
-		)
-
-		for {
-			n1 = n2
-
-			for {
-				if chain.BestBlock().Header().Number() > n1+50000 {
-					break
-				}
-				time.Sleep(time.Second)
-			}
-
-			rollingI++
-			accNewPrefix, accOldPrefix, accMaturePrefix := db.RollTrie("a", rollingI)
-			_, storageOldPrefix, storageMaturePrefix := db.RollTrie("s", rollingI)
-			fmt.Printf("Pruner: accTrie %x %x %x\n", accNewPrefix, accOldPrefix, accMaturePrefix)
-			n2 = chain.BestBlock().Header().Number() + 20
-
-			for {
-				if chain.BestBlock().Header().Number() > n2+20 {
-					break
-				}
-				time.Sleep(time.Second)
-			}
-
-			fmt.Printf("Pruner: accTrie start [%v, %v]\n", n1, n2)
-			accEntries := 0
-			storageEntries := 0
-
-			id1, err := chain.NewTrunk().GetBlockID(n1)
-			if err != nil {
-				panic(err)
-			}
-			id2, err := chain.NewTrunk().GetBlockID(n2)
-			if err != nil {
-				panic(err)
-			}
-
-			h1, _, err := chain.GetBlockHeader(id1)
-			if err != nil {
-				panic(err)
-			}
-
-			h2, _, err := chain.GetBlockHeader(id2)
-			if err != nil {
-				panic(err)
-			}
+			fmt.Println("Pruner: indexTrie entries ", indexEntries)
 
 			stateRoot1 := h1.StateRoot()
 			stateRoot2 := h2.StateRoot()
@@ -342,7 +268,7 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 						panic(err)
 					}
 					accEntries++
-					if err := lowStore.Put(append(accMaturePrefix, makeHashKey(h[:], diff.Path())...), data); err != nil {
+					if err := lowStore.Put(append(maturePrefix, makeHashKey(h[:], diff.Path())...), data); err != nil {
 						panic(err)
 					}
 				}
@@ -384,7 +310,7 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 									panic(err)
 								}
 								storageEntries++
-								if err := lowStore.Put(append(storageMaturePrefix, makeHashKey(h[:], sit.Path())...), n); err != nil {
+								if err := lowStore.Put(append(maturePrefix, makeHashKey(h[:], sit.Path())...), n); err != nil {
 									panic(err)
 								}
 							}
@@ -396,16 +322,7 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 				}
 			}
 			fmt.Println("Pruner: account trie entries ", accEntries)
-			fmt.Println("Pruner: storage trie entries ", storageEntries, ", deleting old spot...")
-
-			deleted := 0
-			if err := lowStore.Iterate(storageOldPrefix, func(key []byte, val []byte) error {
-				deleted++
-				return lowStore.Delete(key)
-			}); err != nil {
-				panic(err)
-			}
-			fmt.Println("Pruner: storage trie delete entries:", deleted, ", mature:", storageEntries, ", ratio:", float64(storageEntries*100)/float64(deleted), "%")
+			fmt.Println("Pruner: storage trie entries ", storageEntries)
 
 			for {
 				if chain.BestBlock().Header().Number() > n2+65536+20 {
@@ -414,24 +331,22 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 				time.Sleep(time.Second)
 			}
 
-			fmt.Println("Pruner: acc trie deleting old spot...")
+			fmt.Println("Pruner: deleting...")
 
-			deleted = 0
-			if err := lowStore.Iterate(accOldPrefix, func(key []byte, val []byte) error {
+			deleted := 0
+			if err := lowStore.Iterate(oldPrefix, func(key []byte, val []byte) error {
 				deleted++
 				return lowStore.Delete(key)
 			}); err != nil {
-
 				panic(err)
-
 			}
+			fmt.Println("Pruner: delete entries:", deleted, ", mature:", indexEntries, accEntries, storageEntries, ", ratio:", float64((indexEntries+accEntries+storageEntries)*100)/float64(deleted), "%")
 
-			// fmt.Println("Pruner: Compact")
+			// fmt.Println("Pruner: Compacting...")
 			// rg := util.BytesPrefix(oldPrefix)
 			// lowStore.Compact(rg.Start, rg.Limit)
 			// fmt.Println("Pruner: Compact done")
 
-			fmt.Println("Pruner: delete entries:", deleted, ", mature:", accEntries, ", ratio:", float64(accEntries*100)/float64(deleted), "%")
 		}
 	}()
 
