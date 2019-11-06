@@ -212,6 +212,9 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 			if err != nil {
 				panic(err)
 			}
+			if n1 == 0 {
+				iroot1 = thor.Bytes32{}
+			}
 
 			itr1 := db.NewTrieNoFillCache("i", iroot1, false)
 			itr2 := db.NewTrieNoFillCache("i", iroot2, false)
@@ -819,6 +822,32 @@ func defaultAction(ctx *cli.Context) error {
 	// fmt.Println(n)
 	// return nil
 	// prune(triex, stateDB, chain)
+
+	// tr := chain.NewTrunk()
+
+	// var blocks []*block.Block
+	// for i := 3401831; i < 3401832; i++ {
+	// 	id, _ := tr.GetBlockID(uint32(i))
+	// 	b, _ := chain.GetBlock(id)
+	// 	blocks = append(blocks, b)
+	// }
+	// fmt.Println(len(blocks))
+
+	// con := consensus.New(chain, mainDB, forkConfig)
+	// for _, b := range blocks {
+	// 	_, _, err := con.Process(b, b.Header().Timestamp())
+	// 	fmt.Println(err)
+	// }
+
+	// defer profile.Start().Stop()
+
+	// for i := 0; i < 1; i++ {
+	// 	for _, b := range blocks {
+	// 		con.Process(b, b.Header().Timestamp())
+	// 	}
+	// }
+
+	// return nil
 	prune(mainDB, chain)
 
 	master := loadNodeMaster(ctx)

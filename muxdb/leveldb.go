@@ -57,6 +57,23 @@ func openLevelDB(
 	return &levelDB{db}, nil
 }
 
+func openSamll(path string) (*levelDB, error) {
+	db, err := leveldb.OpenFile(path, &opt.Options{
+		Filter:                 filter.NewBloomFilter(10),
+		DisableSeeksCompaction: true,
+	})
+
+	if _, corrupted := err.(*dberrors.ErrCorrupted); corrupted {
+		db, err = leveldb.RecoverFile(path, nil)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &levelDB{db}, nil
+}
+
 func openMemDB() (*levelDB, error) {
 	db, err := leveldb.Open(storage.NewMemStorage(), nil)
 	if err != nil {
