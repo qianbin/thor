@@ -16,6 +16,7 @@ type cachedObject struct {
 	db       *muxdb.MuxDB
 	data     Account
 	blockNum uint32
+	addr     thor.Address
 
 	cache struct {
 		code        []byte
@@ -24,14 +25,14 @@ type cachedObject struct {
 	}
 }
 
-func newCachedObject(db *muxdb.MuxDB, data *Account, blockNum uint32) *cachedObject {
-	return &cachedObject{db: db, data: *data, blockNum: blockNum}
+func newCachedObject(db *muxdb.MuxDB, data *Account, blockNum uint32, addr thor.Address) *cachedObject {
+	return &cachedObject{db: db, data: *data, addr: addr, blockNum: blockNum}
 }
 
 func (co *cachedObject) getOrCreateStorageTrie() muxdb.Trie {
 	if co.cache.storageTrie == nil {
 		co.cache.storageTrie = co.db.NewTrie(
-			"s",
+			"s"+string(thor.Blake2b(co.addr[:]).Bytes()),
 			thor.BytesToBytes32(co.data.StorageRoot),
 			true)
 	}

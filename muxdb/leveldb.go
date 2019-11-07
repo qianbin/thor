@@ -13,7 +13,7 @@ import (
 var (
 	writeOpt = opt.WriteOptions{}
 	readOpt  = opt.ReadOptions{
-		DontTriggerCompaction: true,
+		// DontTriggerCompaction: true,
 	}
 
 	_ engine = (*levelDB)(nil)

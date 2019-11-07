@@ -41,7 +41,6 @@ func (nc *nodeCache) Set(key []byte, val interface{}) {
 
 type MuxDB struct {
 	engine    engine
-	engine2   engine
 	trieSpots map[string]trix
 	cache     *cache
 	lock      sync.Mutex
@@ -54,11 +53,6 @@ func New(path string, options *Options) (*MuxDB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db2, err := openSamll(path + "x")
-	if err != nil {
-		return nil, err
-	}
-
 	c := newCache(options.CacheSize * 3 / 4)
 
 	go func() {
@@ -75,7 +69,6 @@ func New(path string, options *Options) (*MuxDB, error) {
 	lru, _ := lru.New(65536)
 	return &MuxDB{
 		engine:    db,
-		engine2:   db2,
 		trieSpots: make(map[string]trix),
 		cache:     c,
 		nodeCache: &nodeCache{lru},
@@ -88,28 +81,23 @@ func NewMem() (*MuxDB, error) {
 		return nil, err
 	}
 
-	db2, err := openMemDB()
-	if err != nil {
-		return nil, err
-	}
-
 	return &MuxDB{
-		engine:    db,
-		engine2:   db2,
+		engine: db,
+
 		trieSpots: make(map[string]trix),
 		cache:     nil,
 	}, nil
 }
 func makeHashKey(hash []byte, path []byte) []byte {
-	var key [36]byte
-	for i := 0; i < len(path) && i < 8; i++ {
+	var key [40]byte
+	for i := 0; i < len(path) && i < 16; i++ {
 		if i%2 == 0 {
 			key[i/2] |= path[i] << 4
 		} else {
 			key[i/2] |= path[i]
 		}
 	}
-	copy(key[4:], hash)
+	copy(key[8:], hash)
 	return key[:]
 }
 
@@ -124,6 +112,7 @@ func (m *MuxDB) NewTrieNoFillCache(name string, root thor.Bytes32, secure bool) 
 func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCache bool) Trie {
 
 	bkt := bucket{trieSlot} //append(bucket{trieSlot}, []byte(name)...)
+	nbkt := bucket(name)
 	m.lock.Lock()
 	t, ok := m.trieSpots["x"]
 	if !ok {
@@ -144,7 +133,7 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 			enc, err := m.cache.ProxyGet(func(key []byte) ([]byte, error) {
 				var val []byte
 				if err := m.engine.Snapshot(func(getter kv.Getter) error {
-					v, err := t.ProxyGet(bkt.ProxyGet(getter.Get))(makeHashKey(key, path))
+					v, err := nbkt.ProxyGet(t.ProxyGet(bkt.ProxyGet(getter.Get)))(makeHashKey(key, path))
 					if err != nil {
 						return err
 					}
@@ -195,7 +184,7 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 				return hash[:]
 			},
 			func(fn func(putExFunc) error) error {
-				m.engine2.Batch(func(putter kv.Putter) error {
+				return m.engine.Batch(func(putter kv.Putter) error {
 					saveSecureKey := bucket{trieSecureKeySlot}.ProxyPut(putter.Put)
 					for h, p := range secureKeyPreimages {
 						if err := saveSecureKey(h[:], p); err != nil {
@@ -203,10 +192,7 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 						}
 					}
 					secureKeyPreimages = nil
-					return nil
-				})
-				return m.engine.Batch(func(putter kv.Putter) error {
-					x := t.ProxyPut(bkt.ProxyPut(putter.Put))
+					x := nbkt.ProxyPut(t.ProxyPut(bkt.ProxyPut(putter.Put)))
 					return fn(func(key, path, val []byte, dec interface{}) error {
 						m.nodeCache.Set(key, dec)
 						return m.cache.ProxyPut(func(k, v []byte) error {
@@ -224,7 +210,7 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 		func(key []byte, save bool) []byte { return key },
 		func(fn func(putExFunc) error) error {
 			return m.engine.Batch(func(putter kv.Putter) error {
-				x := t.ProxyPut(bkt.ProxyPut(putter.Put))
+				x := nbkt.ProxyPut(t.ProxyPut(bkt.ProxyPut(putter.Put)))
 				return fn(func(key, path, val []byte, dec interface{}) error {
 					m.nodeCache.Set(key, dec)
 					return m.cache.ProxyPut(func(k, v []byte) error {
@@ -262,25 +248,25 @@ func (m *MuxDB) NewStore(name string, doCache bool) kv.Store {
 		isNotFoundFunc
 		compactFunc
 	}{
-		cache.ProxyGetter(b.ProxyGetter(m.engine2)),
-		cache.ProxyPutter(b.ProxyPutter(m.engine2)),
+		cache.ProxyGetter(b.ProxyGetter(m.engine)),
+		cache.ProxyPutter(b.ProxyPutter(m.engine)),
 		func(fn func(kv.Getter) error) error {
-			return m.engine2.Snapshot(func(getter kv.Getter) error {
+			return m.engine.Snapshot(func(getter kv.Getter) error {
 				return fn(cache.ProxyGetter(b.ProxyGetter(getter)))
 			})
 		},
 		func(fn func(kv.Putter) error) error {
-			return m.engine2.Batch(func(putter kv.Putter) error {
+			return m.engine.Batch(func(putter kv.Putter) error {
 				return fn(cache.ProxyPutter(b.ProxyPutter(putter)))
 			})
 		},
 		func(prefix []byte, fn func([]byte, []byte) error) error {
 			bucketLen := len(b)
-			return m.engine2.Iterate(append(b, prefix...), func(key, val []byte) error {
+			return m.engine.Iterate(append(b, prefix...), func(key, val []byte) error {
 				return fn(key[bucketLen:], val)
 			})
 		},
-		m.engine2.IsNotFound,
+		m.engine.IsNotFound,
 		func([]byte, []byte) error { return errors.New("not supported") },
 	}
 }
@@ -290,11 +276,10 @@ func (m *MuxDB) LowStore() kv.Store {
 }
 
 func (m *MuxDB) GetSecureKey(hash thor.Bytes32) ([]byte, error) {
-	return bucket{trieSecureKeySlot}.ProxyGet(m.engine2.Get)(hash[:])
+	return bucket{trieSecureKeySlot}.ProxyGet(m.engine.Get)(hash[:])
 }
 
 func (m *MuxDB) Close() error {
-	m.engine2.Close()
 	return m.engine.Close()
 }
 

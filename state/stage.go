@@ -45,7 +45,7 @@ func newStage(db *muxdb.MuxDB, root thor.Bytes32, changes map[thor.Address]*chan
 		// skip storage changes if account is empty
 		if !dataCpy.IsEmpty() {
 			if len(obj.storage) > 0 {
-				strie := db.NewTrie("s", thor.BytesToBytes32(dataCpy.StorageRoot), true)
+				strie := db.NewTrie("s"+string(thor.Blake2b(addr[:]).Bytes()), thor.BytesToBytes32(dataCpy.StorageRoot), true)
 				storageTries = append(storageTries, strie)
 				for k, v := range obj.storage {
 					if err := strie.Update(k[:], v); err != nil {

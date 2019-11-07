@@ -145,15 +145,15 @@ func setPruneStatus(s kv.Store, ps *pruneStatus) {
 }
 
 func makeHashKey(hash []byte, path []byte) []byte {
-	var key [36]byte
-	for i := 0; i < len(path) && i < 8; i++ {
+	var key [40]byte
+	for i := 0; i < len(path) && i < 16; i++ {
 		if i%2 == 0 {
 			key[i/2] |= path[i] << 4
 		} else {
 			key[i/2] |= path[i]
 		}
 	}
-	copy(key[4:], hash)
+	copy(key[8:], hash)
 	return key[:]
 }
 func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
@@ -236,7 +236,7 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 						panic(err)
 					}
 					indexEntries++
-					if err := lowStore.Put(append(maturePrefix, makeHashKey(h[:], idiff.Path())...), data); err != nil {
+					if err := lowStore.Put(append(append(maturePrefix, 'i'), makeHashKey(h[:], idiff.Path())...), data); err != nil {
 						panic(err)
 					}
 				}
@@ -271,7 +271,7 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 						panic(err)
 					}
 					accEntries++
-					if err := lowStore.Put(append(maturePrefix, makeHashKey(h[:], diff.Path())...), data); err != nil {
+					if err := lowStore.Put(append(append(maturePrefix, 'a'), makeHashKey(h[:], diff.Path())...), data); err != nil {
 						panic(err)
 					}
 				}
@@ -297,11 +297,13 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 							}
 							sroot1 = thor.BytesToBytes32(acc1.StorageRoot)
 						}
-						sit1, err := db.NewTrieNoFillCache("s", sroot1, false).NodeIterator(nil)
+						sprefix := []byte("s" + string(diff.LeafKey()))
+
+						sit1, err := db.NewTrieNoFillCache(string(sprefix), sroot1, false).NodeIterator(nil)
 						if err != nil {
 							panic(err)
 						}
-						sit2, err := db.NewTrieNoFillCache("s", sroot2, false).NodeIterator(nil)
+						sit2, err := db.NewTrieNoFillCache(string(sprefix), sroot2, false).NodeIterator(nil)
 						if err != nil {
 							panic(err)
 						}
@@ -313,7 +315,7 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 									panic(err)
 								}
 								storageEntries++
-								if err := lowStore.Put(append(maturePrefix, makeHashKey(h[:], sit.Path())...), n); err != nil {
+								if err := lowStore.Put(append(append(maturePrefix, sprefix...), makeHashKey(h[:], sit.Path())...), n); err != nil {
 									panic(err)
 								}
 							}
@@ -848,6 +850,28 @@ func defaultAction(ctx *cli.Context) error {
 	// }
 
 	// return nil
+	// tr := mainDB.NewTrie("", chain.BestBlock().Header().StateRoot(), true)
+
+	// data, _ := tr.Get(thor.MustParseAddress("0x828cA60C9D6Dd6266249588dBE00a67dF83d5D4D").Bytes())
+	// var acc state.Account
+	// rlp.DecodeBytes(data, &acc)
+
+	// tt := mainDB.NewTrie("", thor.BytesToBytes32(acc.StorageRoot), false)
+	// it, _ := tt.NodeIterator(nil)
+
+	// n := 0
+	// m := make(map[int]int)
+	// for it.Next(true) {
+	// 	if !it.Hash().IsZero() {
+	// 		n++
+	// 		m[len(it.Path())]++
+	// 	}
+
+	// }
+	// fmt.Println(n)
+	// fmt.Println(m)
+	// return nil
+
 	prune(mainDB, chain)
 
 	master := loadNodeMaster(ctx)

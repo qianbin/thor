@@ -122,9 +122,9 @@ func (s *State) getCachedObject(addr thor.Address) *cachedObject {
 	a, err := loadAccount(s.trie, addr)
 	if err != nil {
 		s.setError(err)
-		return newCachedObject(s.db, emptyAccount(), s.blockNum)
+		return newCachedObject(s.db, emptyAccount(), s.blockNum, addr)
 	}
-	co := newCachedObject(s.db, a, s.blockNum)
+	co := newCachedObject(s.db, a, s.blockNum, addr)
 	s.cache[addr] = co
 	return co
 }
@@ -349,7 +349,7 @@ func (s *State) RevertTo(revision int) {
 func (s *State) BuildStorageTrie(addr thor.Address) (muxdb.Trie, error) {
 	acc := s.getAccount(addr)
 
-	trie := s.db.NewTrie("s", thor.BytesToBytes32(acc.StorageRoot), true)
+	trie := s.db.NewTrie("s"+string(thor.Blake2b(addr[:]).Bytes()), thor.BytesToBytes32(acc.StorageRoot), true)
 	// traverse journal to filter out storage changes for addr
 	s.sm.Journal(func(k, v interface{}) bool {
 		switch key := k.(type) {
