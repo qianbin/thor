@@ -14,7 +14,7 @@ type bloom struct {
 	masks []uint64
 }
 
-func newBloom(m int64, k int) *bloom {
+func NewBloom(m int64, k int) *bloom {
 	m = m / 64 * 64
 	masks := make([]uint64, k)
 	for i := 0; i < k; i++ {

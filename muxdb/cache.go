@@ -13,6 +13,15 @@ func newCache(maxSizeMB int) *cache {
 	return &cache{freecache.NewCache(1024 * 1024 * maxSizeMB)}
 }
 
+func (c *cache) Evict(key []byte) {
+	if c == nil {
+		return
+	}
+
+	c.fc.Del(key)
+
+}
+
 func (c *cache) ProxyGet(get getFunc, dontFillCache bool) getFunc {
 	if c == nil {
 		return get

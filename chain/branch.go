@@ -44,8 +44,8 @@ func (b *Branch) GetBlockID(num uint32) (thor.Bytes32, error) {
 	if b.err != nil {
 		return thor.Bytes32{}, b.err
 	}
-	var key [4]byte
-	binary.BigEndian.PutUint32(key[:], num)
+	var key [5]byte
+	binary.BigEndian.PutUint32(key[1:], num)
 	data, err := b.indexTrie.Get(key[:])
 	if err != nil {
 		return thor.Bytes32{}, err
@@ -61,7 +61,7 @@ func (b *Branch) GetTransactionMeta(id thor.Bytes32) (*TxMeta, error) {
 		return nil, b.err
 	}
 
-	enc, err := b.indexTrie.Get(id[:])
+	enc, err := b.indexTrie.Get(append([]byte{1}, id[:]...))
 	if err != nil {
 		return nil, err
 	}
@@ -168,8 +168,10 @@ func (c *Chain) indexBlock(indexRoot thor.Bytes32, block *block.Block, receipts 
 	trie := c.db.NewTrie("i", indexRoot, false)
 	id := block.Header().ID()
 
+	var key [5]byte
+	copy(key[1:], id[:4])
 	// map block number to block ID
-	if err := trie.Update(id[:4], id[:]); err != nil {
+	if err := trie.Update(key[:], id[:]); err != nil {
 		return thor.Bytes32{}, err
 	}
 
@@ -184,7 +186,7 @@ func (c *Chain) indexBlock(indexRoot thor.Bytes32, block *block.Block, receipts 
 		if err != nil {
 			return thor.Bytes32{}, err
 		}
-		if err := trie.Update(tx.ID().Bytes(), enc); err != nil {
+		if err := trie.Update(append([]byte{1}, tx.ID().Bytes()...), enc); err != nil {
 			return thor.Bytes32{}, err
 		}
 	}

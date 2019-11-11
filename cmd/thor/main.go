@@ -21,6 +21,7 @@ import (
 	isatty "github.com/mattn/go-isatty"
 	"github.com/pborman/uuid"
 	"github.com/pkg/errors"
+	"github.com/syndtr/goleveldb/leveldb/util"
 	"github.com/vechain/thor/api"
 	"github.com/vechain/thor/block"
 	"github.com/vechain/thor/chain"
@@ -164,7 +165,53 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 			n1       = uint32(0)
 			n2       = uint32(0)
 			rollingI = 0
+			bloom    = muxdb.NewBloom(256*1024*1024*8, 3)
 		)
+
+		type op struct {
+			del  bool
+			k, v []byte
+		}
+
+		var ops []op
+		flushBatch := func() error {
+			if len(ops) > 0 {
+				return lowStore.Batch(func(p kv.Putter) error {
+					for _, op := range ops {
+						if op.del {
+							p.Delete(op.k)
+						} else {
+							p.Put(op.k, op.v)
+						}
+					}
+					ops = nil
+					return nil
+				})
+			}
+			return nil
+		}
+
+		batchPut := func(k, v []byte) error {
+			ops = append(ops, op{
+				k: append([]byte(nil), k...),
+				v: append([]byte(nil), v...),
+			})
+			if len(ops) > 8192 {
+				return flushBatch()
+			}
+			return nil
+		}
+
+		batchDel := func(k []byte) error {
+			ops = append(ops, op{
+				del: true,
+				k:   append([]byte(nil), k...),
+			})
+			if len(ops) >= 8192 {
+				return flushBatch()
+			}
+			return nil
+		}
 
 		for {
 			n1 = n2
@@ -236,7 +283,9 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 						panic(err)
 					}
 					indexEntries++
-					if err := lowStore.Put(append(append(maturePrefix, 'i'), makeHashKey(h[:], idiff.Path())...), data); err != nil {
+
+					bloom.Add(h)
+					if err := batchPut(append(append(maturePrefix, 'i'), makeHashKey(h[:], idiff.Path())...), data); err != nil {
 						panic(err)
 					}
 				}
@@ -271,7 +320,8 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 						panic(err)
 					}
 					accEntries++
-					if err := lowStore.Put(append(append(maturePrefix, 'a'), makeHashKey(h[:], diff.Path())...), data); err != nil {
+					bloom.Add(h)
+					if err := batchPut(append(append(maturePrefix, 'a'), makeHashKey(h[:], diff.Path())...), data); err != nil {
 						panic(err)
 					}
 				}
@@ -315,7 +365,8 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 									panic(err)
 								}
 								storageEntries++
-								if err := lowStore.Put(append(append(maturePrefix, sprefix...), makeHashKey(h[:], sit.Path())...), n); err != nil {
+								bloom.Add(h)
+								if err := batchPut(append(append(maturePrefix, sprefix...), makeHashKey(h[:], sit.Path())...), n); err != nil {
 									panic(err)
 								}
 							}
@@ -326,6 +377,7 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 					}
 				}
 			}
+			flushBatch()
 			fmt.Println("Pruner: account trie entries ", accEntries)
 			fmt.Println("Pruner: storage trie entries ", storageEntries)
 
@@ -339,12 +391,43 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 			fmt.Println("Pruner: deleting...")
 
 			deleted := 0
-			if err := lowStore.Iterate(oldPrefix, func(key []byte, val []byte) error {
-				deleted++
-				return lowStore.Delete(key)
-			}); err != nil {
-				panic(err)
+
+			r := func() kv.Range {
+				rr := util.BytesPrefix(oldPrefix)
+				return kv.Range{
+					From: rr.Start,
+					To:   rr.Limit,
+				}
+			}()
+
+			for {
+				counter := 0
+				if err := lowStore.Iterate(r, func(key []byte, val []byte) bool {
+					if counter >= 8192 {
+						r.From = key
+						return false
+					}
+
+					deleted++
+					h := thor.BytesToBytes32(key)
+					if !bloom.Test(h) {
+						db.EvictTrieCache(h[:])
+					}
+					if err := batchDel(key); err != nil {
+						panic(err)
+					}
+					counter++
+
+					return true
+				}); err != nil {
+					panic(err)
+				}
+				if counter == 0 {
+					break
+				}
 			}
+
+			flushBatch()
 			fmt.Println("Pruner: delete entries:", deleted, ", mature:", indexEntries, accEntries, storageEntries, ", ratio:", float64((indexEntries+accEntries+storageEntries)*100)/float64(deleted), "%")
 
 			// fmt.Println("Pruner: Compacting...")
@@ -740,12 +823,34 @@ func defaultAction(ctx *cli.Context) error {
 	// f(2)
 	// f(3)
 
+	// lowStore := mainDB.LowStore()
+	// p1, p2, _ := mainDB.RollTrie(0)
+	// lowStore.Compact(util.BytesPrefix(p1).Start, util.BytesPrefix(p1).Limit)
+	// fmt.Println("1")
+	// lowStore.Compact(util.BytesPrefix(p2).Start, util.BytesPrefix(p2).Limit)
+	// return nil
+
 	skipLogs := ctx.Bool(skipLogsFlag.Name)
 
 	logDB := openLogDB(ctx, instanceDir)
 	defer func() { log.Info("closing log database..."); logDB.Close() }()
 
 	chain := initChain(gene, mainDB, logDB)
+
+	// n := chain.BestBlock().Header().Number()
+	// b := chain.NewTrunk()
+
+	// for i := uint32(0); i < n; i++ {
+	// 	_, err := b.GetBlockID(i)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	if i%1000 == 0 {
+	// 		fmt.Println(i)
+	// 	}
+
+	// }
+
 	// cons := consensus.New(chain, mainDB, forkConfig)
 	// for i := uint32(2165914); i < chain.BestBlock().Header().Number(); i++ {
 	// 	blk, err := chain.NewTrunk().GetBlock(i)

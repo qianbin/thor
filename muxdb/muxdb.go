@@ -221,6 +221,9 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 		},
 	}
 }
+func (m *MuxDB) EvictTrieCache(key []byte) {
+	m.cache.Evict(key)
+}
 
 func (m *MuxDB) RollTrie(i int) ([]byte, []byte, []byte) {
 	m.lock.Lock()
@@ -260,14 +263,17 @@ func (m *MuxDB) NewStore(name string, doCache bool) kv.Store {
 				return fn(cache.ProxyPutter(b.ProxyPutter(putter)))
 			})
 		},
-		func(prefix []byte, fn func([]byte, []byte) error) error {
+		func(r kv.Range, fn func([]byte, []byte) bool) error {
 			bucketLen := len(b)
-			return m.engine.Iterate(append(b, prefix...), func(key, val []byte) error {
+			return m.engine.Iterate(kv.Range{
+				From: append(b, r.From...),
+				To:   append(b, r.To...),
+			}, func(key, val []byte) bool {
 				return fn(key[bucketLen:], val)
 			})
 		},
 		m.engine.IsNotFound,
-		func([]byte, []byte) error { return errors.New("not supported") },
+		func(r kv.Range) error { return errors.New("not supported") },
 	}
 }
 

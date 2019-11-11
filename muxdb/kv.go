@@ -14,8 +14,8 @@ type deleteFunc func(key []byte) error
 type isNotFoundFunc func(error) bool
 type snapshotFunc func(func(getter kv.Getter) error) error
 type batchFunc func(func(putter kv.Putter) error) error
-type iterateFunc func(prefix []byte, fn func(key, val []byte) error) error
-type compactFunc func(from, to []byte) error
+type iterateFunc func(r kv.Range, fn func(key, val []byte) bool) error
+type compactFunc func(r kv.Range) error
 type getExFunc func(key, path []byte, decode func(enc []byte) interface{}) ([]byte, interface{}, error)
 type putExFunc func(key, path, value []byte, dec interface{}) error
 
@@ -26,10 +26,10 @@ func (f deleteFunc) Delete(key []byte) error                   { return f(key) }
 func (f isNotFoundFunc) IsNotFound(err error) bool             { return f(err) }
 func (f snapshotFunc) Snapshot(fn func(kv.Getter) error) error { return f(fn) }
 func (f batchFunc) Batch(fn func(kv.Putter) error) error       { return f(fn) }
-func (f iterateFunc) Iterate(prefix []byte, fn func(key, val []byte) error) error {
-	return f(prefix, fn)
+func (f iterateFunc) Iterate(r kv.Range, fn func(key, val []byte) bool) error {
+	return f(r, fn)
 }
-func (f compactFunc) Compact(from, to []byte) error { return f(from, to) }
+func (f compactFunc) Compact(r kv.Range) error { return f(r) }
 func (f getExFunc) GetEx(key, path []byte, decode func([]byte) interface{}) ([]byte, interface{}, error) {
 	return f(key, path, decode)
 }

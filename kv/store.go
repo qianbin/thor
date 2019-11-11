@@ -15,8 +15,12 @@ type Store interface {
 	Putter
 	Snapshot(fn func(Getter) error) error
 	Batch(fn func(Putter) error) error
-	Iterate(prefix []byte, fn func(key, val []byte) error) error
-	Compact(from, to []byte) error
+	Iterate(r Range, fn func(key, val []byte) bool) error
+	Compact(r Range) error
 
 	IsNotFound(error) bool
+}
+
+type Range struct {
+	From, To []byte
 }

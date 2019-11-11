@@ -15,6 +15,9 @@ var (
 	readOpt  = opt.ReadOptions{
 		// DontTriggerCompaction: true,
 	}
+	scanOpt = opt.ReadOptions{
+		DontFillCache: true,
+	}
 
 	_ engine = (*levelDB)(nil)
 )
@@ -37,17 +40,24 @@ func openLevelDB(
 		fileDescriptorCache = 16
 	}
 
-	db, err := leveldb.OpenFile(path, &opt.Options{
+	opts := opt.Options{
 		// CompactionTableSizeMultiplier: 2,
 		OpenFilesCacheCapacity: fileDescriptorCache,
-		BlockCacheCapacity:     cacheSize / 2 * opt.MiB,
-		WriteBuffer:            cacheSize / 4 * opt.MiB, // Two of these are used internally
+		BlockCacheCapacity:     128 * opt.MiB,
+		BlockSize:              256 * opt.KiB,
+		CompactionL0Trigger:    32,
+		WriteBuffer:            64 * opt.MiB, // Two of these are used internally
 		Filter:                 filter.NewBloomFilter(10),
 		DisableSeeksCompaction: true,
-	})
+		WriteL0PauseTrigger:    96,
+		WriteL0SlowdownTrigger: 64,
+		CompactionTotalSize:    80 * opt.MiB,
+	}
+
+	db, err := leveldb.OpenFile(path, &opts)
 
 	if _, corrupted := err.(*dberrors.ErrCorrupted); corrupted {
-		db, err = leveldb.RecoverFile(path, nil)
+		db, err = leveldb.RecoverFile(path, &opts)
 	}
 
 	if err != nil {
@@ -147,18 +157,21 @@ func (l *levelDB) Batch(fn func(kv.Putter) error) error {
 	return l.db.Write(batch, &writeOpt)
 }
 
-func (l *levelDB) Iterate(prefix []byte, fn func(key, val []byte) error) error {
-	it := l.db.NewIterator(util.BytesPrefix(prefix), &readOpt)
+func (l *levelDB) Iterate(r kv.Range, fn func(key, val []byte) bool) error {
+	it := l.db.NewIterator(&util.Range{
+		Start: r.From,
+		Limit: r.To,
+	}, &scanOpt)
 	defer it.Release()
 
 	for it.Next() {
-		if err := fn(it.Key(), it.Value()); err != nil {
-			return err
+		if !fn(it.Key(), it.Value()) {
+			break
 		}
 	}
 	return it.Error()
 }
 
-func (l *levelDB) Compact(from, to []byte) error {
-	return l.db.CompactRange(util.Range{Start: from, Limit: to})
+func (l *levelDB) Compact(r kv.Range) error {
+	return l.db.CompactRange(util.Range{Start: r.From, Limit: r.To})
 }
