@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/keystore"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/inconshreveable/log15"
@@ -840,8 +842,108 @@ func defaultAction(ctx *cli.Context) error {
 	// n := chain.BestBlock().Header().Number()
 	// b := chain.NewTrunk()
 
-	// for i := uint32(0); i < n; i++ {
+	// for i := uint32(0); i <= n; i++ {
+	// 	_, err := b.GetBlockHeader(i)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	if i%10000 == 0 {
+	// 		fmt.Println(i)
+	// 	}
+	// }
+
+	// return nil
+
+	// f, err := os.Open("/Users/cola/chain.mainnet.rlp")
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// prune(mainDB, chain)
+
+	// r := rlp.NewStream(f, 0)
+
+	// cons := consensus.New(chain, mainDB, forkConfig)
+
+	// var stats blockStats
+	// k := mclock.Now()
+
+	// report := func(block *block.Block) {
+	// 	log.Info(fmt.Sprintf("imported blocks (%v)", stats.processed), stats.LogContext(block.Header())...)
+	// 	stats = blockStats{}
+	// 	k = mclock.Now()
+	// }
+
+	// //	defer profile.Start().Stop()
+	// //	for i := 0; i < 50000; i++ {
+	// for {
+	// 	startTime := mclock.Now()
+	// 	var b block.Block
+	// 	if err := r.Decode(&b); err != nil {
+	// 		if err == io.EOF {
+	// 			break
+	// 		}
+	// 		panic(err)
+	// 	}
+	// 	if b.Header().Number() == 0 {
+	// 		continue
+	// 	}
+
+	// 	stage, receipts, err := cons.Process(&b, b.Header().Timestamp())
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	execElapsed := mclock.Now() - startTime
+	// 	if _, err := stage.Commit(); err != nil {
+	// 		panic(err)
+	// 	}
+
+	// 	if err := chain.AddBlock(&b, receipts); err != nil {
+	// 		panic(err)
+	// 	}
+	// 	commitElapsed := mclock.Now() - startTime - execElapsed
+	// 	stats.UpdateProcessed(1, len(receipts), execElapsed, commitElapsed, b.Header().GasUsed())
+
+	// 	if stats.processed > 0 &&
+	// 		mclock.Now()-k > mclock.AbsTime(time.Second*2) {
+	// 		report(&b)
+	// 	}
+	// 	select {
+	// 	case <-exitSignal.Done():
+	// 		return nil
+	// 	default:
+	// 	}
+	// }
+
+	// n := chain.BestBlock().Header().Number()
+	// b := chain.NewTrunk()
+
+	// for i := uint32(0); i <= 50000; i++ {
 	// 	_, err := b.GetBlockID(i)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// }
+	// fmt.Println("GO")
+	// defer profile.Start().Stop()
+	// for i := uint32(0); i <= 50000; i++ {
+	// 	_, err := b.GetBlockHeader(i)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// }
+	// s := rlp.NewStream(f, 0)
+
+	// for i := 0; i < 100; i++ {
+	// 	var b block.Block
+
+	// 	if err := s.Decode(&b); err != nil {
+	// 		panic(err)
+	// 	}
+	// 	fmt.Println(b.Header().Number())
+	// }
+
+	// for i := uint32(0); i < n; i++ {
+	// 	_, err := b.GetBlockHeader(i)
 	// 	if err != nil {
 	// 		panic(err)
 	// 	}
@@ -850,6 +952,7 @@ func defaultAction(ctx *cli.Context) error {
 	// 	}
 
 	// }
+	// return nil
 
 	// cons := consensus.New(chain, mainDB, forkConfig)
 	// for i := uint32(2165914); i < chain.BestBlock().Header().Number(); i++ {
@@ -1304,4 +1407,41 @@ func syncLogDB(ctx context.Context, chain *chain.Chain, logDB *logdb.LogDB, veri
 	}
 	pb.Finish()
 	return nil
+}
+
+type blockStats struct {
+	exec, commit               mclock.AbsTime
+	txs                        int
+	usedGas                    uint64
+	processed, queued, ignored int
+}
+
+func (s *blockStats) UpdateProcessed(n int, txs int, exec, commit mclock.AbsTime, usedGas uint64) {
+	s.processed += n
+	s.txs += txs
+	s.exec += exec
+	s.commit += commit
+	s.usedGas += usedGas
+}
+
+func (s *blockStats) UpdateIgnored(n int) {
+	s.ignored += n
+}
+
+func (s *blockStats) UpdateQueued(n int) {
+	s.queued += n
+}
+
+func (s *blockStats) LogContext(last *block.Header) []interface{} {
+	return []interface{}{
+		"txs", s.txs,
+		"mgas", float64(s.usedGas) / 1000 / 1000,
+		"et", fmt.Sprintf("%v|%v", common.PrettyDuration(s.exec), common.PrettyDuration(s.commit)),
+		"mgas/s", float64(s.usedGas) * 1000 / float64(s.exec+s.commit),
+		"id", shortID(last.ID()),
+	}
+}
+
+func shortID(id thor.Bytes32) string {
+	return fmt.Sprintf("[#%v…%x]", block.Number(id), id[28:])
 }

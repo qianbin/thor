@@ -8,6 +8,7 @@ package consensus
 import (
 	"fmt"
 
+	"github.com/hashicorp/golang-lru/simplelru"
 	"github.com/vechain/thor/block"
 	"github.com/vechain/thor/builtin"
 	"github.com/vechain/thor/chain"
@@ -26,17 +27,18 @@ type Consensus struct {
 	db                   *muxdb.MuxDB
 	forkConfig           thor.ForkConfig
 	correctReceiptsRoots map[string]string
-	poaCache             *poaCache
+	candidatesCache      *simplelru.LRU
 }
 
 // New create a Consensus instance.
 func New(chain *chain.Chain, db *muxdb.MuxDB, forkConfig thor.ForkConfig) *Consensus {
+	candidatesCache, _ := simplelru.NewLRU(16, nil)
 	return &Consensus{
 		chain:                chain,
 		db:                   db,
 		forkConfig:           forkConfig,
 		correctReceiptsRoots: thor.LoadCorrectReceiptsRoots(),
-		poaCache:             newPOACache(16),
+		candidatesCache:      candidatesCache,
 	}
 }
 

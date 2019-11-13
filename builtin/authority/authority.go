@@ -169,7 +169,7 @@ func (a *Authority) Candidates(endorsement *big.Int, limit uint64) []*Candidate 
 	return candidates
 }
 
-// AllCandidates get all candidates.
+// AllCandidates lists all registered candidates.
 func (a *Authority) AllCandidates() []*Candidate {
 	var candidates []*Candidate
 	ptr := a.getAddressPtr(headKey)

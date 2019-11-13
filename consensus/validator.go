@@ -31,7 +31,7 @@ func (c *Consensus) validate(
 		return nil, nil, err
 	}
 
-	cacheEntry, err := c.validateProposer(header, parentHeader, state)
+	candidates, err := c.validateProposer(header, parentHeader, state)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -45,27 +45,46 @@ func (c *Consensus) validate(
 		return nil, nil, err
 	}
 
-	entryDirty := false
-DONE:
-	for _, r := range receipts {
-		for _, o := range r.Outputs {
-			for _, e := range o.Events {
-				if e.Address == builtin.Params.Address || e.Address == builtin.Authority.Address {
-					entryDirty = true
-					break DONE
-				}
-			}
-			for _, t := range o.Transfers {
-				if cacheEntry.Contains(t.Sender) || cacheEntry.Contains(t.Recipient) {
-					entryDirty = true
-					break DONE
+	hasAuthorityEvent := func() bool {
+		for _, r := range receipts {
+			for _, o := range r.Outputs {
+				for _, ev := range o.Events {
+					if ev.Address == builtin.Authority.Address {
+						return true
+					}
 				}
 			}
 		}
-	}
+		return false
+	}()
 
-	if !entryDirty {
-		c.poaCache.Set(header.ID(), cacheEntry)
+	// if no event emitted from Authority contract, it's believed that the candidates list not changed
+	if !hasAuthorityEvent {
+
+		// if no endorsor related transfer, or no event emitted from Params contract, the proposers list
+		// can be reused
+		hasEndorsorEvent := func() bool {
+			for _, r := range receipts {
+				for _, o := range r.Outputs {
+					for _, ev := range o.Events {
+						if ev.Address == builtin.Params.Address {
+							return true
+						}
+					}
+					for _, t := range o.Transfers {
+						if candidates.IsEndorsor(t.Sender) || candidates.IsEndorsor(t.Recipient) {
+							return true
+						}
+					}
+				}
+			}
+			return false
+		}()
+
+		if hasEndorsorEvent {
+			candidates.InvalidateCache()
+		}
+		c.candidatesCache.Add(header.ID(), candidates)
 	}
 
 	return stage, receipts, nil
@@ -98,38 +117,22 @@ func (c *Consensus) validateBlockHeader(header *block.Header, parent *block.Head
 	return nil
 }
 
-func (c *Consensus) validateProposer(header *block.Header, parent *block.Header, st *state.State) (*poaCacheEntry, error) {
+func (c *Consensus) validateProposer(header *block.Header, parent *block.Header, st *state.State) (*poa.Candidates, error) {
 	signer, err := header.Signer()
 	if err != nil {
 		return nil, consensusError(fmt.Sprintf("block signer unavailable: %v", err))
 	}
 	authority := builtin.Authority.Native(st)
-
-	cacheEntry := c.poaCache.Get(parent.ID())
-	if cacheEntry != nil {
-		cacheEntry = cacheEntry.Copy()
+	var candidates *poa.Candidates
+	if entry, ok := c.candidatesCache.Get(parent.ID()); ok {
+		candidates = entry.(*poa.Candidates).Copy()
 	} else {
-		endorsement := builtin.Params.Native(st).Get(thor.KeyProposerEndorsement)
-
-		candidates := authority.AllCandidates()
-		proposers := make([]poa.Proposer, 0, len(candidates))
-
-		for _, c := range candidates {
-			if uint64(len(proposers)) >= thor.MaxBlockProposers {
-				break
-			}
-			if bal := st.GetBalance(c.Endorsor); bal.Cmp(endorsement) < 0 {
-				continue
-			}
-			proposers = append(proposers, poa.Proposer{
-				Address: c.NodeMaster,
-				Active:  c.Active,
-			})
-		}
-		cacheEntry = newPOACacheEntry(proposers, candidates)
+		candidates = poa.NewCandidates(authority.AllCandidates())
 	}
 
-	sched, err := poa.NewScheduler(signer, cacheEntry.proposers, parent.Number(), parent.Timestamp())
+	proposers := candidates.Pick(st)
+
+	sched, err := poa.NewScheduler(signer, proposers, parent.Number(), parent.Timestamp())
 	if err != nil {
 		return nil, consensusError(fmt.Sprintf("block signer invalid: %v %v", signer, err))
 	}
@@ -145,10 +148,13 @@ func (c *Consensus) validateProposer(header *block.Header, parent *block.Header,
 
 	for _, u := range updates {
 		authority.Update(u.Address, u.Active)
-		cacheEntry.Update(u.Address, u.Active)
+		if !candidates.Update(u.Address, u.Active) {
+			// should never happen
+			panic("something wrong with candidates list")
+		}
 	}
 
-	return cacheEntry, nil
+	return candidates, nil
 }
 
 func (c *Consensus) validateBlockBody(blk *block.Block) error {

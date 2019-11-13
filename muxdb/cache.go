@@ -18,7 +18,7 @@ func (c *cache) Evict(key []byte) {
 		return
 	}
 
-	c.fc.Del(key)
+	// c.fc.Del(key)
 
 }
 
@@ -37,7 +37,7 @@ func (c *cache) ProxyGet(get getFunc, dontFillCache bool) getFunc {
 			return nil, err
 		}
 		if !dontFillCache {
-			c.fc.Set(key, val, 0)
+			c.fc.Set(key, val, 24*3600)
 		}
 		return val, nil
 	}
@@ -51,7 +51,7 @@ func (c *cache) ProxyPut(put putFunc) putFunc {
 		if err := put(key, val); err != nil {
 			return err
 		}
-		c.fc.Set(key, val, 0)
+		c.fc.Set(key, val, 24*3600)
 		return nil
 	}
 }

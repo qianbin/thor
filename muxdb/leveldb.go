@@ -43,15 +43,15 @@ func openLevelDB(
 	opts := opt.Options{
 		// CompactionTableSizeMultiplier: 2,
 		OpenFilesCacheCapacity: fileDescriptorCache,
-		BlockCacheCapacity:     128 * opt.MiB,
-		BlockSize:              256 * opt.KiB,
-		CompactionL0Trigger:    32,
-		WriteBuffer:            64 * opt.MiB, // Two of these are used internally
+		BlockCacheCapacity:     256 * opt.MiB,
+		// BlockSize:              256 * opt.KiB,
+		//  CompactionL0Trigger:    32,
+		WriteBuffer:            128 * opt.MiB, // Two of these are used internally
 		Filter:                 filter.NewBloomFilter(10),
 		DisableSeeksCompaction: true,
-		WriteL0PauseTrigger:    96,
-		WriteL0SlowdownTrigger: 64,
-		CompactionTotalSize:    80 * opt.MiB,
+		// WriteL0PauseTrigger:    96,
+		// WriteL0SlowdownTrigger: 64,
+		// CompactionTotalSize:    80 * opt.MiB,
 	}
 
 	db, err := leveldb.OpenFile(path, &opts)

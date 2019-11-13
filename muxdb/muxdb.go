@@ -16,9 +16,6 @@ var (
 	trieSlot          = byte(0)
 	trieSecureKeySlot = byte(1)
 	freeSlot          = byte(2)
-
-	dynamicSpots = [2]byte{0, 1}
-	matureSpot   = byte(2)
 )
 
 type nodeCache struct {
@@ -40,10 +37,10 @@ func (nc *nodeCache) Set(key []byte, val interface{}) {
 }
 
 type MuxDB struct {
-	engine    engine
-	trieSpots map[string]trix
-	cache     *cache
-	lock      sync.Mutex
+	engine engine
+	trix   trix
+	cache  *cache
+	lock   sync.Mutex
 
 	nodeCache *nodeCache
 }
@@ -66,10 +63,9 @@ func New(path string, options *Options) (*MuxDB, error) {
 				c.fc.HitRate())
 		}
 	}()
-	lru, _ := lru.New(65536)
+	lru, _ := lru.New(65536 * 4)
 	return &MuxDB{
 		engine:    db,
-		trieSpots: make(map[string]trix),
 		cache:     c,
 		nodeCache: &nodeCache{lru},
 	}, nil
@@ -83,9 +79,7 @@ func NewMem() (*MuxDB, error) {
 
 	return &MuxDB{
 		engine: db,
-
-		trieSpots: make(map[string]trix),
-		cache:     nil,
+		cache:  nil,
 	}, nil
 }
 func makeHashKey(hash []byte, path []byte) []byte {
@@ -111,13 +105,11 @@ func (m *MuxDB) NewTrieNoFillCache(name string, root thor.Bytes32, secure bool) 
 
 func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCache bool) Trie {
 
+	dontFillCache = true
 	bkt := bucket{trieSlot} //append(bucket{trieSlot}, []byte(name)...)
 	nbkt := bucket(name)
 	m.lock.Lock()
-	t, ok := m.trieSpots["x"]
-	if !ok {
-		t = trix{dynamicSpots[0], dynamicSpots[1], matureSpot}
-	}
+	t := m.trix
 	m.lock.Unlock()
 
 	raw, err := trie.New(root, struct {
@@ -228,11 +220,13 @@ func (m *MuxDB) EvictTrieCache(key []byte) {
 func (m *MuxDB) RollTrie(i int) ([]byte, []byte, []byte) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	m.trieSpots["x"] = trix{dynamicSpots[i%2], dynamicSpots[(i+1)%2], matureSpot}
+	m.trix++
 
-	return []byte{trieSlot, dynamicSpots[i%2]},
-		[]byte{trieSlot, dynamicSpots[(i+1)%2]},
-		[]byte{trieSlot, matureSpot}
+	p1, p2, p3 := m.trix.Prefixes()
+
+	return []byte{trieSlot, p1},
+		[]byte{trieSlot, p2},
+		[]byte{trieSlot, p3}
 }
 
 func (m *MuxDB) NewStore(name string, doCache bool) kv.Store {
