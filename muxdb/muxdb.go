@@ -1,6 +1,7 @@
 package muxdb
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sync"
@@ -84,13 +85,51 @@ func NewMem() (*MuxDB, error) {
 }
 func makeHashKey(hash []byte, path []byte) []byte {
 	var key [40]byte
-	for i := 0; i < len(path) && i < 16; i++ {
+	// for i := 0; i < len(path) && i < 15; i++ {
+	// 	if i%2 == 0 {
+	// 		key[i/2] |= path[i] << 4
+	// 	} else {
+	// 		key[i/2] |= path[i]
+	// 	}
+	// }
+	// end := len(path)
+	// if end > 15 {
+	// 	end = 15
+	// }
+	// key[7] = key[7] | byte(end)
+
+	// v := uint64(0)
+	// off := uint64(0)
+	// for i := 0; i < len(path) && i < 16; i++ {
+	// 	v += (1 << (uint(i) * 4))
+	// 	off <<= 4
+	// 	off += uint64(path[i])
+	// }
+	// v += off
+
+	l := len(path)
+	if l > 3 {
+		v := uint16(0)
+		for i := 0; i < 3; i++ {
+			v <<= 4
+			v += uint16(path[i])
+		}
+
+		binary.BigEndian.PutUint16(key[:], v)
+		l -= 3
+		path = path[3:]
+	}
+
+	for i := 0; i < l && i < 10; i++ {
 		if i%2 == 0 {
-			key[i/2] |= path[i] << 4
+			key[2+i/2] |= path[i] << 4
 		} else {
-			key[i/2] |= path[i]
+			key[2+i/2] |= path[i]
 		}
 	}
+
+	key[7] |= byte(len(path))
+
 	copy(key[8:], hash)
 	return key[:]
 }
@@ -122,6 +161,10 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 		nil,
 		nil,
 		func(key, path []byte, decode func([]byte) interface{}) ([]byte, interface{}, error) {
+			noFill := dontFillCache
+			if len(path) < 4 {
+				noFill = false
+			}
 			enc, err := m.cache.ProxyGet(func(key []byte) ([]byte, error) {
 				var val []byte
 				if err := m.engine.Snapshot(func(getter kv.Getter) error {
@@ -135,7 +178,7 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 					return nil, err
 				}
 				return val, nil
-			}, dontFillCache)(key)
+			}, noFill)(key)
 
 			if err != nil {
 				return nil, nil, err
@@ -146,7 +189,7 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 			}
 
 			dec := decode(enc)
-			if !dontFillCache {
+			if !noFill {
 				m.nodeCache.Set(key, dec)
 			}
 
@@ -186,10 +229,12 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 					secureKeyPreimages = nil
 					x := nbkt.ProxyPut(t.ProxyPut(bkt.ProxyPut(putter.Put)))
 					return fn(func(key, path, val []byte, dec interface{}) error {
+
 						m.nodeCache.Set(key, dec)
 						return m.cache.ProxyPut(func(k, v []byte) error {
 							return x(makeHashKey(k, path), v)
 						})(key, val)
+
 					})
 				})
 			},
@@ -204,10 +249,12 @@ func (m *MuxDB) newTrie(name string, root thor.Bytes32, secure bool, dontFillCac
 			return m.engine.Batch(func(putter kv.Putter) error {
 				x := nbkt.ProxyPut(t.ProxyPut(bkt.ProxyPut(putter.Put)))
 				return fn(func(key, path, val []byte, dec interface{}) error {
+
 					m.nodeCache.Set(key, dec)
 					return m.cache.ProxyPut(func(k, v []byte) error {
 						return x(makeHashKey(k, path), v)
 					})(key, val)
+
 				})
 			})
 		},
