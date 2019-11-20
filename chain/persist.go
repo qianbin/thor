@@ -14,7 +14,8 @@ import (
 )
 
 var (
-	emptyRoot = (tx.Transactions{}).RootHash()
+	bodySuffix     = byte('b')
+	receiptsSuffix = byte('r')
 )
 
 // TxMeta contains information about a tx is settled.
@@ -60,25 +61,25 @@ func loadBlockHeader(r kv.Getter, id thor.Bytes32) (*extHeader, error) {
 	return &header, nil
 }
 
-func saveTransactions(w kv.Putter, txsRoot thor.Bytes32, txs tx.Transactions) error {
-	return saveRLP(w, txsRoot[:], txs)
+func saveTransactions(w kv.Putter, id thor.Bytes32, txs tx.Transactions) error {
+	return saveRLP(w, append(id.Bytes(), bodySuffix), txs)
 }
 
-func loadTransactions(r kv.Getter, txsRoot thor.Bytes32) (tx.Transactions, error) {
+func loadTransactions(r kv.Getter, id thor.Bytes32) (tx.Transactions, error) {
 	var txs tx.Transactions
-	if err := loadRLP(r, txsRoot[:], &txs); err != nil {
+	if err := loadRLP(r, append(id.Bytes(), bodySuffix), &txs); err != nil {
 		return nil, err
 	}
 	return txs, nil
 }
 
-func saveReceipts(w kv.Putter, receiptsRoot thor.Bytes32, receipts tx.Receipts) error {
-	return saveRLP(w, receiptsRoot[:], receipts)
+func saveReceipts(w kv.Putter, id thor.Bytes32, receipts tx.Receipts) error {
+	return saveRLP(w, append(id.Bytes(), receiptsSuffix), receipts)
 }
 
-func loadReceipts(r kv.Getter, receiptsRoot thor.Bytes32) (tx.Receipts, error) {
+func loadReceipts(r kv.Getter, id thor.Bytes32) (tx.Receipts, error) {
 	var receipts tx.Receipts
-	if err := loadRLP(r, receiptsRoot[:], &receipts); err != nil {
+	if err := loadRLP(r, append(id.Bytes(), receiptsSuffix), &receipts); err != nil {
 		return nil, err
 	}
 	return receipts, nil

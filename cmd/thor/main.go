@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -29,6 +30,7 @@ import (
 	"github.com/vechain/thor/chain"
 	"github.com/vechain/thor/cmd/thor/node"
 	"github.com/vechain/thor/cmd/thor/solo"
+	"github.com/vechain/thor/consensus"
 	"github.com/vechain/thor/genesis"
 	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/logdb"
@@ -147,18 +149,6 @@ func setPruneStatus(s kv.Store, ps *pruneStatus) {
 	s.Put([]byte("ps"), data)
 }
 
-func makeHashKey(hash []byte, path []byte) []byte {
-	var key [40]byte
-	for i := 0; i < len(path) && i < 16; i++ {
-		if i%2 == 0 {
-			key[i/2] |= path[i] << 4
-		} else {
-			key[i/2] |= path[i]
-		}
-	}
-	copy(key[8:], hash)
-	return key[:]
-}
 func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 	lowStore := db.LowStore()
 
@@ -287,7 +277,7 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 					indexEntries++
 
 					bloom.Add(h)
-					if err := batchPut(append(append(maturePrefix, 'i'), makeHashKey(h[:], idiff.Path())...), data); err != nil {
+					if err := batchPut(append(append(maturePrefix, 'i'), muxdb.MakeHashKey(h[:], idiff.Path())...), data); err != nil {
 						panic(err)
 					}
 				}
@@ -323,7 +313,7 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 					}
 					accEntries++
 					bloom.Add(h)
-					if err := batchPut(append(append(maturePrefix, 'a'), makeHashKey(h[:], diff.Path())...), data); err != nil {
+					if err := batchPut(append(append(maturePrefix, 'a'), muxdb.MakeHashKey(h[:], diff.Path())...), data); err != nil {
 						panic(err)
 					}
 				}
@@ -368,7 +358,7 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 								}
 								storageEntries++
 								bloom.Add(h)
-								if err := batchPut(append(append(maturePrefix, sprefix...), makeHashKey(h[:], sit.Path())...), n); err != nil {
+								if err := batchPut(append(append(maturePrefix, sprefix...), muxdb.MakeHashKey(h[:], sit.Path())...), n); err != nil {
 									panic(err)
 								}
 							}
@@ -434,7 +424,8 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 
 			// fmt.Println("Pruner: Compacting...")
 			// rg := util.BytesPrefix(oldPrefix)
-			// lowStore.Compact(rg.Start, rg.Limit)
+			// lowStore.Compact(kv.Range{
+			// 	From: rg.Start, To: rg.Limit})
 			// fmt.Println("Pruner: Compact done")
 
 		}
@@ -798,6 +789,50 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 }
 
 func defaultAction(ctx *cli.Context) error {
+
+	// db, _ := muxdb.New("/Users/cola/hh4.db", &muxdb.Options{CacheSize: 2048})
+	// defer db.Close()
+
+	// // log.Info("")
+	// // tt := db.NewTrie("a", thor.MustParseBytes32("0x0d79f417846eb72f0ee9c303ee9dbc2d8ac5df1a3c6deba399afffddaf5937c6"), false)
+
+	// // for i := 0; i < 100000; i++ {
+	// // 	var b [4]byte
+	// // 	binary.BigEndian.PutUint32(b[:], uint32(i))
+	// // 	k := thor.Blake2b(b[:])
+	// // 	if _, err := tt.Get(k[:]); err != nil {
+	// // 		panic(err)
+	// // 	}
+	// // }
+
+	// // log.Info("")
+	// return nil
+
+	// tr := db.NewTrie("a", thor.Bytes32{}, false)
+	// // tr := db.NewTrie("a", thor.MustParseBytes32("0x276021cb60cd32283331f36111726bcbbe06f23767e5629da432c94809cb5048"), false)
+	// // log.Info("")
+	// // for i := 0; i < 6000000; i++ {
+	// // 	var b [4]byte
+	// // 	binary.BigEndian.PutUint32(b[:], uint32(i))
+	// // 	k := thor.Blake2b(b[:])
+	// // 	tr.Get(k[:])
+	// // }
+	// // log.Info("")
+	// for i := 0; i < 100; i++ {
+	// 	for j := 0; j < 60000; j++ {
+	// 		n := i*60000 + j
+	// 		var b [4]byte
+	// 		binary.BigEndian.PutUint32(b[:], uint32(n))
+	// 		k := thor.Blake2b(b[:])
+	// 		v := thor.Blake2b(k[:])
+	// 		tr.Update(k[:], v[:])
+	// 	}
+	// 	root, _ := tr.Commit()
+	// 	tr = db.NewTrie("a", root, false)
+	// 	fmt.Println(i, root)
+	// }
+	// return nil
+
 	exitSignal := handleExitSignal()
 
 	defer func() { log.Info("exited") }()
@@ -839,90 +874,102 @@ func defaultAction(ctx *cli.Context) error {
 
 	chain := initChain(gene, mainDB, logDB)
 
+	f, err := os.Open("/Users/cola/chain.testnet.rlp")
+	if err != nil {
+		panic(err)
+	}
+	prune(mainDB, chain)
+
+	r := rlp.NewStream(f, 0)
+
+	cons := consensus.New(chain, mainDB, forkConfig)
+
+	var stats blockStats
+	k := mclock.Now()
+
+	report := func(block *block.Block) {
+		log.Info(fmt.Sprintf("imported blocks (%v)", stats.processed), stats.LogContext(block.Header())...)
+		stats = blockStats{}
+		k = mclock.Now()
+	}
+
+	//	defer profile.Start().Stop()
+	//	for i := 0; i < 50000; i++ {
+	for {
+		startTime := mclock.Now()
+		var b block.Block
+		if err := r.Decode(&b); err != nil {
+			if err == io.EOF {
+				break
+			}
+			panic(err)
+		}
+		if b.Header().Number() == 0 {
+			continue
+		}
+
+		stage, receipts, err := cons.Process(&b, b.Header().Timestamp())
+		if err != nil {
+			panic(err)
+		}
+		execElapsed := mclock.Now() - startTime
+		if _, err := stage.Commit(); err != nil {
+			panic(err)
+		}
+
+		if err := chain.AddBlock(&b, receipts); err != nil {
+			panic(err)
+		}
+		commitElapsed := mclock.Now() - startTime - execElapsed
+		stats.UpdateProcessed(1, len(receipts), execElapsed, commitElapsed, b.Header().GasUsed())
+
+		if stats.processed > 0 &&
+			mclock.Now()-k > mclock.AbsTime(time.Second*2) {
+			report(&b)
+		}
+		select {
+		case <-exitSignal.Done():
+			return nil
+		default:
+		}
+	}
+	return nil
+	// log.Info("heh")
 	// n := chain.BestBlock().Header().Number()
 	// b := chain.NewTrunk()
 
+	// // id, _ := b.GetBlockID(n)
+	// // _, root, _ := chain.GetBlockHeader(id)
+
+	// // tr := mainDB.NewTrie("i", root, false)
+
+	// // it, _ := tr.NodeIterator(nil)
+
+	// // var nc, lc int
+	// // m := make(map[int]int)
+	// // for it.Next(true) {
+	// // 	if h := it.Hash(); !h.IsZero() {
+	// // 		nc++
+	// // 		m[len(it.Path())]++
+	// // 	}
+	// // 	if it.Leaf() {
+	// // 		lc++
+	// // 	}
+	// // }
+
+	// // fmt.Println(nc, lc)
+	// // fmt.Println(m)
+	// log.Info("")
 	// for i := uint32(0); i <= n; i++ {
-	// 	_, err := b.GetBlockHeader(i)
-	// 	if err != nil {
-	// 		panic(err)
-	// 	}
-	// 	if i%10000 == 0 {
-	// 		fmt.Println(i)
-	// 	}
-	// }
-
-	// return nil
-
-	// f, err := os.Open("/Users/cola/chain.mainnet.rlp")
-	// if err != nil {
-	// 	panic(err)
-	// }
-	// prune(mainDB, chain)
-
-	// r := rlp.NewStream(f, 0)
-
-	// cons := consensus.New(chain, mainDB, forkConfig)
-
-	// var stats blockStats
-	// k := mclock.Now()
-
-	// report := func(block *block.Block) {
-	// 	log.Info(fmt.Sprintf("imported blocks (%v)", stats.processed), stats.LogContext(block.Header())...)
-	// 	stats = blockStats{}
-	// 	k = mclock.Now()
-	// }
-
-	// //	defer profile.Start().Stop()
-	// //	for i := 0; i < 50000; i++ {
-	// for {
-	// 	startTime := mclock.Now()
-	// 	var b block.Block
-	// 	if err := r.Decode(&b); err != nil {
-	// 		if err == io.EOF {
-	// 			break
-	// 		}
-	// 		panic(err)
-	// 	}
-	// 	if b.Header().Number() == 0 {
-	// 		continue
-	// 	}
-
-	// 	stage, receipts, err := cons.Process(&b, b.Header().Timestamp())
-	// 	if err != nil {
-	// 		panic(err)
-	// 	}
-	// 	execElapsed := mclock.Now() - startTime
-	// 	if _, err := stage.Commit(); err != nil {
-	// 		panic(err)
-	// 	}
-
-	// 	if err := chain.AddBlock(&b, receipts); err != nil {
-	// 		panic(err)
-	// 	}
-	// 	commitElapsed := mclock.Now() - startTime - execElapsed
-	// 	stats.UpdateProcessed(1, len(receipts), execElapsed, commitElapsed, b.Header().GasUsed())
-
-	// 	if stats.processed > 0 &&
-	// 		mclock.Now()-k > mclock.AbsTime(time.Second*2) {
-	// 		report(&b)
-	// 	}
-	// 	select {
-	// 	case <-exitSignal.Done():
-	// 		return nil
-	// 	default:
-	// 	}
-	// }
-
-	// n := chain.BestBlock().Header().Number()
-	// b := chain.NewTrunk()
-
-	// for i := uint32(0); i <= 50000; i++ {
 	// 	_, err := b.GetBlockID(i)
 	// 	if err != nil {
 	// 		panic(err)
 	// 	}
+	// 	// if i%10000 == 0 {
+	// 	// 	fmt.Println(i)
+	// 	// }
 	// }
+	// return nil
 	// fmt.Println("GO")
 	// defer profile.Start().Stop()
 	// for i := uint32(0); i <= 50000; i++ {
@@ -1058,25 +1105,36 @@ func defaultAction(ctx *cli.Context) error {
 	// }
 
 	// return nil
-	// tr := mainDB.NewTrie("", chain.BestBlock().Header().StateRoot(), true)
+	// tr := mainDB.NewTrie("a", chain.BestBlock().Header().StateRoot(), true)
 
 	// data, _ := tr.Get(thor.MustParseAddress("0x828cA60C9D6Dd6266249588dBE00a67dF83d5D4D").Bytes())
 	// var acc state.Account
 	// rlp.DecodeBytes(data, &acc)
 
-	// tt := mainDB.NewTrie("", thor.BytesToBytes32(acc.StorageRoot), false)
+	// tt := mainDB.NewTrie("s"+string(thor.Blake2b(thor.MustParseAddress("0x828cA60C9D6Dd6266249588dBE00a67dF83d5D4D").Bytes()).Bytes()), thor.BytesToBytes32(acc.StorageRoot), false)
 	// it, _ := tt.NodeIterator(nil)
 
 	// n := 0
+	// l := 0
+	// s := 0
 	// m := make(map[int]int)
 	// for it.Next(true) {
 	// 	if !it.Hash().IsZero() {
 	// 		n++
 	// 		m[len(it.Path())]++
+
+	// 		if len(it.Path()) == 3 {
+	// 			v, _ := it.Node()
+	// 			s += len(v)
+	// 		}
+	// 		// fmt.Printf("%x\n", it.Path())
+	// 	}
+	// 	if it.Leaf() {
+	// 		l++
 	// 	}
 
 	// }
-	// fmt.Println(n)
+	// fmt.Println(n, l, s)
 	// fmt.Println(m)
 	// return nil
 

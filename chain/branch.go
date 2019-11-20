@@ -103,11 +103,11 @@ func (b *Branch) GetTransaction(id thor.Bytes32) (*tx.Transaction, *TxMeta, erro
 	if err != nil {
 		return nil, nil, err
 	}
-	block, err := b.chain.GetBlock(txMeta.BlockID)
+	txs, err := b.chain.GetBlockBody(txMeta.BlockID)
 	if err != nil {
 		return nil, nil, err
 	}
-	return block.Transactions()[txMeta.Index], txMeta, nil
+	return txs[txMeta.Index], txMeta, nil
 }
 
 func (b *Branch) GetReceipt(txID thor.Bytes32) (*tx.Receipt, error) {

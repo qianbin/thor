@@ -41,17 +41,33 @@ func openLevelDB(
 	}
 
 	opts := opt.Options{
-		// CompactionTableSizeMultiplier: 2,
-		OpenFilesCacheCapacity: fileDescriptorCache,
-		BlockCacheCapacity:     256 * opt.MiB,
+		CompactionTableSizeMultiplier: 2,
+		CompactionTotalSizeMultiplier: 20,
+		OpenFilesCacheCapacity:        fileDescriptorCache,
+		BlockCacheCapacity:            256 * opt.MiB,
 		// BlockSize:              256 * opt.KiB,
 		//  CompactionL0Trigger:    32,
-		WriteBuffer:            128 * opt.MiB, // Two of these are used internally
+		WriteBuffer:            64 * opt.MiB, // Two of these are used internally
 		Filter:                 filter.NewBloomFilter(10),
 		DisableSeeksCompaction: true,
+		// IteratorSamplingRate: -1,
 		// WriteL0PauseTrigger:    96,
 		// WriteL0SlowdownTrigger: 64,
 		// CompactionTotalSize:    80 * opt.MiB,
+		KeyAffinity: func(key []byte) int {
+			if len(key) > 0 {
+				if key[0] == 0 {
+					return int(key[1])*256 + int(key[2])
+				}
+				if key[0] == 1 {
+					return 0
+				}
+				if key[0] == 2 {
+					return 256*10 + int(key[1])
+				}
+			}
+			return 100000000
+		},
 	}
 
 	db, err := leveldb.OpenFile(path, &opts)

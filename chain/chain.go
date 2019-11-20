@@ -187,6 +187,16 @@ func (c *Chain) GetBlockHeader(id thor.Bytes32) (*block.Header, thor.Bytes32, er
 	return extHeader.Header, extHeader.IndexRoot, nil
 }
 
+func (c *Chain) GetBlockBody(id thor.Bytes32) (tx.Transactions, error) {
+	txs, err := c.bodyCache.GetOrLoad(id, func(interface{}) (interface{}, error) {
+		return loadTransactions(c.blockStore, id)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return txs.(tx.Transactions), nil
+}
+
 // GetBlock get block by id.
 func (c *Chain) GetBlock(id thor.Bytes32) (*block.Block, error) {
 	header, _, err := c.GetBlockHeader(id)
@@ -194,13 +204,8 @@ func (c *Chain) GetBlock(id thor.Bytes32) (*block.Block, error) {
 		return nil, err
 	}
 
-	txsRoot := header.TxsRoot()
-	if txsRoot == emptyRoot {
-		return block.Compose(header, nil), nil
-	}
-
-	txs, err := c.bodyCache.GetOrLoad(txsRoot, func(interface{}) (interface{}, error) {
-		return loadTransactions(c.blockStore, txsRoot)
+	txs, err := c.bodyCache.GetOrLoad(id, func(interface{}) (interface{}, error) {
+		return loadTransactions(c.blockStore, id)
 	})
 	if err != nil {
 		return nil, err
@@ -210,17 +215,8 @@ func (c *Chain) GetBlock(id thor.Bytes32) (*block.Block, error) {
 
 // GetReceipts get all receipts in the block of given block id.
 func (c *Chain) GetReceipts(id thor.Bytes32) (tx.Receipts, error) {
-	header, _, err := c.GetBlockHeader(id)
-	if err != nil {
-		return nil, err
-	}
-	receiptsRoot := header.ReceiptsRoot()
-	if receiptsRoot == emptyRoot {
-		return nil, nil
-	}
-
-	receipts, err := c.receiptsCache.GetOrLoad(receiptsRoot, func(interface{}) (interface{}, error) {
-		return loadReceipts(c.blockStore, receiptsRoot)
+	receipts, err := c.receiptsCache.GetOrLoad(id, func(interface{}) (interface{}, error) {
+		return loadReceipts(c.blockStore, id)
 	})
 	if err != nil {
 		return nil, err
@@ -272,22 +268,18 @@ func (c *Chain) saveBlockAndReceipts(
 	indexRoot thor.Bytes32,
 ) error {
 	var (
-		header       = block.Header()
-		txs          = block.Transactions()
-		txsRoot      = header.TxsRoot()
-		receiptsRoot = header.ReceiptsRoot()
-		extHeader    = &extHeader{header, indexRoot}
+		header    = block.Header()
+		txs       = block.Transactions()
+		extHeader = &extHeader{header, indexRoot}
 	)
 	if err := c.blockStore.Batch(func(putter kv.Putter) error {
-		if txsRoot != emptyRoot {
-			if err := saveTransactions(putter, txsRoot, txs); err != nil {
-				return err
-			}
+
+		if err := saveTransactions(putter, header.ID(), txs); err != nil {
+			return err
 		}
-		if receiptsRoot != emptyRoot {
-			if err := saveReceipts(putter, receiptsRoot, receipts); err != nil {
-				return err
-			}
+
+		if err := saveReceipts(putter, header.ID(), receipts); err != nil {
+			return err
 		}
 
 		if err := saveBlockHeader(putter, extHeader); err != nil {
@@ -298,14 +290,8 @@ func (c *Chain) saveBlockAndReceipts(
 		return err
 	}
 
-	if receiptsRoot != emptyRoot {
-		c.receiptsCache.Add(receiptsRoot, receipts)
-	}
-
-	if txsRoot != emptyRoot {
-		c.bodyCache.Add(txsRoot, txs)
-	}
-
+	c.receiptsCache.Add(header.ID(), receipts)
+	c.bodyCache.Add(header.ID(), txs)
 	c.headerCache.Add(header.ID(), extHeader)
 	return nil
 }
