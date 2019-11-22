@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -30,7 +29,6 @@ import (
 	"github.com/vechain/thor/chain"
 	"github.com/vechain/thor/cmd/thor/node"
 	"github.com/vechain/thor/cmd/thor/solo"
-	"github.com/vechain/thor/consensus"
 	"github.com/vechain/thor/genesis"
 	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/logdb"
@@ -874,66 +872,67 @@ func defaultAction(ctx *cli.Context) error {
 
 	chain := initChain(gene, mainDB, logDB)
 
-	f, err := os.Open("/Users/cola/chain.testnet.rlp")
-	if err != nil {
-		panic(err)
-	}
-	prune(mainDB, chain)
+	// f, err := os.Open("/Users/cola/chain.mainnet.rlp")
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// prune(mainDB, chain)
 
-	r := rlp.NewStream(f, 0)
+	// r := rlp.NewStream(f, 0)
 
-	cons := consensus.New(chain, mainDB, forkConfig)
+	// cons := consensus.New(chain, mainDB, forkConfig)
 
-	var stats blockStats
-	k := mclock.Now()
+	// var stats blockStats
+	// k := mclock.Now()
 
-	report := func(block *block.Block) {
-		log.Info(fmt.Sprintf("imported blocks (%v)", stats.processed), stats.LogContext(block.Header())...)
-		stats = blockStats{}
-		k = mclock.Now()
-	}
+	// report := func(block *block.Block) {
+	// 	log.Info(fmt.Sprintf("imported blocks (%v)", stats.processed), stats.LogContext(block.Header())...)
+	// 	stats = blockStats{}
+	// 	k = mclock.Now()
+	// }
 
-	//	defer profile.Start().Stop()
-	//	for i := 0; i < 50000; i++ {
-	for {
-		startTime := mclock.Now()
-		var b block.Block
-		if err := r.Decode(&b); err != nil {
-			if err == io.EOF {
-				break
-			}
-			panic(err)
-		}
-		if b.Header().Number() == 0 {
-			continue
-		}
+	// //	defer profile.Start().Stop()
+	// //	for i := 0; i < 50000; i++ {
+	// for {
+	// 	startTime := mclock.Now()
+	// 	var b block.Block
+	// 	if err := r.Decode(&b); err != nil {
+	// 		if err == io.EOF {
+	// 			break
+	// 		}
+	// 		panic(err)
+	// 	}
+	// 	if b.Header().Number() == 0 {
+	// 		continue
+	// 	}
 
-		stage, receipts, err := cons.Process(&b, b.Header().Timestamp())
-		if err != nil {
-			panic(err)
-		}
-		execElapsed := mclock.Now() - startTime
-		if _, err := stage.Commit(); err != nil {
-			panic(err)
-		}
+	// 	stage, receipts, err := cons.Process(&b, b.Header().Timestamp())
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	execElapsed := mclock.Now() - startTime
+	// 	if _, err := stage.Commit(); err != nil {
+	// 		panic(err)
+	// 	}
 
-		if err := chain.AddBlock(&b, receipts); err != nil {
-			panic(err)
-		}
-		commitElapsed := mclock.Now() - startTime - execElapsed
-		stats.UpdateProcessed(1, len(receipts), execElapsed, commitElapsed, b.Header().GasUsed())
+	// 	if err := chain.AddBlock(&b, receipts); err != nil {
+	// 		panic(err)
+	// 	}
+	// 	commitElapsed := mclock.Now() - startTime - execElapsed
+	// 	stats.UpdateProcessed(1, len(receipts), execElapsed, commitElapsed, b.Header().GasUsed())
 
-		if stats.processed > 0 &&
-			mclock.Now()-k > mclock.AbsTime(time.Second*2) {
-			report(&b)
-		}
-		select {
-		case <-exitSignal.Done():
-			return nil
-		default:
-		}
-	}
-	return nil
+	// 	if stats.processed > 0 &&
+	// 		mclock.Now()-k > mclock.AbsTime(time.Second*2) {
+	// 		report(&b)
+	// 	}
+	// 	select {
+	// 	case <-exitSignal.Done():
+	// 		return nil
+	// 	default:
+	// 	}
+	// }
+	// <-exitSignal.Done()
+	// return nil
 	// log.Info("heh")
 	// n := chain.BestBlock().Header().Number()
 	// b := chain.NewTrunk()
@@ -1138,7 +1137,7 @@ func defaultAction(ctx *cli.Context) error {
 	// fmt.Println(m)
 	// return nil
 
-	prune(mainDB, chain)
+	// prune(mainDB, chain)
 
 	master := loadNodeMaster(ctx)
 
