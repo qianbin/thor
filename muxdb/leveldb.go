@@ -42,9 +42,9 @@ func openLevelDB(
 
 	opts := opt.Options{
 		CompactionTableSizeMultiplier: 2,
-		CompactionTotalSizeMultiplier: 20,
-		OpenFilesCacheCapacity:        fileDescriptorCache,
-		BlockCacheCapacity:            256 * opt.MiB,
+		// CompactionTotalSizeMultiplier: 20,
+		OpenFilesCacheCapacity: fileDescriptorCache,
+		BlockCacheCapacity:     256 * opt.MiB,
 		// BlockSize:              256 * opt.KiB,
 		//  CompactionL0Trigger:    32,
 		WriteBuffer:            128 * opt.MiB, // Two of these are used internally
@@ -54,18 +54,11 @@ func openLevelDB(
 		// WriteL0PauseTrigger:    96,
 		// WriteL0SlowdownTrigger: 64,
 		// CompactionTotalSize:    80 * opt.MiB,
-		KeyAffinity: func(key []byte) (int, bool) {
+		KeyVolatile: func(key []byte) bool {
 			if len(key) > 0 {
-				if key[0] == 0 {
-					if key[1] == 1 {
-						return 1, true
-					}
-					if key[1] == 2 {
-						return 2, true
-					}
-				}
+				return key[0] == 0 && (key[1] == 1 || key[1] == 2)
 			}
-			return 0, false
+			return false
 		},
 	}
 

@@ -98,6 +98,8 @@ github.com/qianbin/goleveldb v0.0.0-20191011031249-6669c1db0f2b h1:yrur960CzF6pO
 github.com/qianbin/goleveldb v0.0.0-20191011031249-6669c1db0f2b/go.mod h1:9OrXJhf154huy1nPWmuSrkgjPUtUNhA+Zmy+6AESzuA=
 github.com/qianbin/goleveldb v0.0.0-20191011031249-730d9797237f h1:NDtSW+UNJAKzVEYK9kBLlyt41eyVtsUmQkQjm0s1Ipg=
 github.com/qianbin/goleveldb v0.0.0-20191011031249-730d9797237f/go.mod h1:9OrXJhf154huy1nPWmuSrkgjPUtUNhA+Zmy+6AESzuA=
+github.com/qianbin/goleveldb v0.0.0-20191011031249-7356cd382be0 h1:VLbDGOclqKngpZhFxkETSTKJqT/GzFfQ9KPKYcGBszk=
+github.com/qianbin/goleveldb v0.0.0-20191011031249-7356cd382be0/go.mod h1:9OrXJhf154huy1nPWmuSrkgjPUtUNhA+Zmy+6AESzuA=
 github.com/qianbin/goleveldb v0.0.0-20191011031249-b2c610435f59 h1:+1FWp4yqTDmCX4/2yiOtRJf4hdWvyea3Y8Skypicf3U=
 github.com/qianbin/goleveldb v0.0.0-20191011031249-b2c610435f59/go.mod h1:9OrXJhf154huy1nPWmuSrkgjPUtUNhA+Zmy+6AESzuA=
 github.com/qianbin/goleveldb v0.0.0-20191011031249-b5f83164feba h1:TRS8GKgf007TWHxMidaz8cvMhg5kOhUsApzwNlnexj0=
