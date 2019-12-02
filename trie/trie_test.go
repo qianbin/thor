@@ -627,7 +627,7 @@ func (d *dbex) Put(key, val []byte) error {
 }
 
 func (d *dbex) GetEncoded(key *NodeKey) ([]byte, error) {
-	enc, err := d.Database.Get(append(append([]byte{}, key.Path...), key.Key...))
+	enc, err := d.Database.Get(append(append([]byte{}, key.Path...), key.Hash...))
 	if err != nil {
 		return nil, err
 	}
@@ -639,10 +639,11 @@ func (d *dbex) GetDecoded(key *NodeKey) (dec interface{}, cacheDec func(interfac
 }
 
 func (d *dbex) PutEncoded(key *NodeKey, enc []byte) error {
-	return d.Database.Put(append(append([]byte{}, key.Path...), key.Key...), enc)
+	return d.Database.Put(append(append([]byte{}, key.Path...), key.Hash...), enc)
 }
 
 func TestDatabaseEx(t *testing.T) {
+
 	db := &dbex{ethdb.NewMemDatabase()}
 	tr, _ := New(thor.Bytes32{}, db)
 

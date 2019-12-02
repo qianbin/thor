@@ -55,9 +55,9 @@ type DatabaseWriter interface {
 
 // NodeKey node key along with node path.
 type NodeKey struct {
-	Key       []byte
-	Path      []byte
-	Iterating bool // might be useful for cache logic.
+	Hash    []byte
+	Path    []byte
+	Scaning bool // whether the key is being iterated. might be useful for cache logic.
 }
 
 // DatabaseReaderEx extended reader.
@@ -427,12 +427,12 @@ func (t *Trie) resolve(n node, prefix []byte) (node, error) {
 	return n, nil
 }
 
-func (t *Trie) resolveHash(n hashNode, prefix []byte, iterating bool) (node, []byte, error) {
+func (t *Trie) resolveHash(n hashNode, prefix []byte, scaning bool) (node, []byte, error) {
 	if ex, ok := t.db.(DatabaseReaderEx); ok {
 		key := NodeKey{
 			n,
 			prefix,
-			iterating,
+			scaning,
 		}
 		dec, cacheDec := ex.GetDecoded(&key)
 		if dec != nil {
