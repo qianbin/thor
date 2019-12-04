@@ -34,11 +34,9 @@ import (
 	"github.com/vechain/thor/comm"
 	"github.com/vechain/thor/genesis"
 	"github.com/vechain/thor/logdb"
-	"github.com/vechain/thor/lvldb"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/p2psrv"
-	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/trie"
 	"github.com/vechain/thor/tx"
 	"github.com/vechain/thor/txpool"
 	cli "gopkg.in/urfave/cli.v1"
@@ -129,7 +127,7 @@ func makeInstanceDir(ctx *cli.Context, gene *genesis.Genesis) string {
 	return instanceDir
 }
 
-func openMainDB(ctx *cli.Context, dataDir string) *lvldb.LevelDB {
+func openMainDB(ctx *cli.Context, dataDir string) *muxdb.MuxDB {
 	cacheMB := normalizeCacheSize(ctx.Int(cacheFlag.Name))
 	log.Debug("cache size(MB)", "size", cacheMB)
 
@@ -143,15 +141,15 @@ func openMainDB(ctx *cli.Context, dataDir string) *lvldb.LevelDB {
 	fdCache := suggestFDCache()
 	log.Debug("fd cache", "n", fdCache)
 
-	dir := filepath.Join(dataDir, "main.db")
-	db, err := lvldb.New(dir, lvldb.Options{
-		CacheSize:              cacheMB / 2,
-		OpenFilesCacheCapacity: fdCache,
+	dir := filepath.Join(dataDir, "main-v2.db")
+	db, err := muxdb.Open(dir, &muxdb.Options{
+		TrieCacheSizeMB: cacheMB,
+		FDCache:         fdCache,
 	})
+
 	if err != nil {
-		fatal(fmt.Sprintf("open chain database [%v]: %v", dir, err))
+		fatal(fmt.Sprintf("open state database [%v]: %v", dir, err))
 	}
-	trie.SetCache(trie.NewCache(cacheMB / 2))
 	return db
 }
 
@@ -206,13 +204,13 @@ func openLogDB(ctx *cli.Context, dataDir string) *logdb.LogDB {
 	return db
 }
 
-func initChain(gene *genesis.Genesis, mainDB *lvldb.LevelDB, logDB *logdb.LogDB) *chain.Chain {
-	genesisBlock, genesisEvents, err := gene.Build(state.NewCreator(mainDB))
+func initChain(gene *genesis.Genesis, db *muxdb.MuxDB, logDB *logdb.LogDB) *chain.Chain {
+	genesisBlock, genesisEvents, err := gene.Build(db)
 	if err != nil {
 		fatal("build genesis block: ", err)
 	}
 
-	chain, err := chain.New(mainDB, genesisBlock)
+	chain, err := chain.New(db, genesisBlock)
 	if err != nil {
 		fatal("initialize block chain:", err)
 	}
@@ -414,8 +412,8 @@ func printStartupMessage2(
 		nodeID)
 }
 
-func openMemMainDB() *lvldb.LevelDB {
-	db, err := lvldb.NewMem()
+func openMemDB() *muxdb.MuxDB {
+	db, err := muxdb.OpenMem()
 	if err != nil {
 		fatal(fmt.Sprintf("open chain database: %v", err))
 	}

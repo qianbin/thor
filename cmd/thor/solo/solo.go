@@ -20,8 +20,8 @@ import (
 	"github.com/vechain/thor/co"
 	"github.com/vechain/thor/genesis"
 	"github.com/vechain/thor/logdb"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/packer"
-	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/tx"
 	"github.com/vechain/thor/txpool"
@@ -43,7 +43,7 @@ type Solo struct {
 // New returns Solo instance
 func New(
 	chain *chain.Chain,
-	stateCreator *state.Creator,
+	db *muxdb.MuxDB,
 	logDB *logdb.LogDB,
 	txPool *txpool.TxPool,
 	gasLimit uint64,
@@ -55,7 +55,7 @@ func New(
 		txPool: txPool,
 		packer: packer.New(
 			chain,
-			stateCreator,
+			db,
 			genesis.DevAccounts()[0].Address,
 			&genesis.DevAccounts()[0].Address,
 			forkConfig),
@@ -164,9 +164,11 @@ func (s *Solo) packing(pendingTxs tx.Transactions) error {
 		return errors.WithMessage(err, "commit state")
 	}
 
-	// ignore fork when solo
-	_, err = s.chain.AddBlock(b, receipts)
+	err = s.chain.AddBlock(b, receipts)
 	if err != nil {
+		return errors.WithMessage(err, "commit block")
+	}
+	if err := s.chain.SetBestBlock(b.Header().ID()); err != nil {
 		return errors.WithMessage(err, "commit block")
 	}
 

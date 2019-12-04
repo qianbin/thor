@@ -19,6 +19,7 @@ import (
 	"github.com/vechain/thor/api/utils"
 	"github.com/vechain/thor/block"
 	"github.com/vechain/thor/chain"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/runtime"
 	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
@@ -28,30 +29,31 @@ import (
 
 type Accounts struct {
 	chain        *chain.Chain
-	stateCreator *state.Creator
+	db           *muxdb.MuxDB
 	callGasLimit uint64
 	forkConfig   thor.ForkConfig
 }
 
 func New(
 	chain *chain.Chain,
-	stateCreator *state.Creator,
+	db *muxdb.MuxDB,
 	callGasLimit uint64,
 	forkConfig thor.ForkConfig,
 ) *Accounts {
 	return &Accounts{
 		chain,
-		stateCreator,
+		db,
 		callGasLimit,
 		forkConfig,
 	}
 }
 
-func (a *Accounts) getCode(addr thor.Address, stateRoot thor.Bytes32) ([]byte, error) {
-	state, err := a.stateCreator.NewState(stateRoot)
+func (a *Accounts) getCode(addr thor.Address, header *block.Header) ([]byte, error) {
+	state, err := state.New(a.db, header.StateRoot())
 	if err != nil {
 		return nil, err
 	}
+
 	code := state.GetCode(addr)
 	if err := state.Err(); err != nil {
 		return nil, err
@@ -69,7 +71,7 @@ func (a *Accounts) handleGetCode(w http.ResponseWriter, req *http.Request) error
 	if err != nil {
 		return err
 	}
-	code, err := a.getCode(addr, h.StateRoot())
+	code, err := a.getCode(addr, h)
 	if err != nil {
 		return err
 	}
@@ -77,10 +79,11 @@ func (a *Accounts) handleGetCode(w http.ResponseWriter, req *http.Request) error
 }
 
 func (a *Accounts) getAccount(addr thor.Address, header *block.Header) (*Account, error) {
-	state, err := a.stateCreator.NewState(header.StateRoot())
+	state, err := state.New(a.db, header.StateRoot())
 	if err != nil {
 		return nil, err
 	}
+
 	b := state.GetBalance(addr)
 	code := state.GetCode(addr)
 	energy := state.GetEnergy(addr, header.Timestamp())
@@ -94,11 +97,12 @@ func (a *Accounts) getAccount(addr thor.Address, header *block.Header) (*Account
 	}, nil
 }
 
-func (a *Accounts) getStorage(addr thor.Address, key thor.Bytes32, stateRoot thor.Bytes32) (thor.Bytes32, error) {
-	state, err := a.stateCreator.NewState(stateRoot)
+func (a *Accounts) getStorage(addr thor.Address, key thor.Bytes32, header *block.Header) (thor.Bytes32, error) {
+	state, err := state.New(a.db, header.StateRoot())
 	if err != nil {
 		return thor.Bytes32{}, err
 	}
+
 	storage := state.GetStorage(addr, key)
 	if err := state.Err(); err != nil {
 		return thor.Bytes32{}, err
@@ -135,7 +139,7 @@ func (a *Accounts) handleGetStorage(w http.ResponseWriter, req *http.Request) er
 	if err != nil {
 		return err
 	}
-	storage, err := a.getStorage(addr, key, h.StateRoot())
+	storage, err := a.getStorage(addr, key, h)
 	if err != nil {
 		return err
 	}
@@ -199,10 +203,11 @@ func (a *Accounts) batchCall(ctx context.Context, batchCallData *BatchCallData, 
 	if err != nil {
 		return nil, err
 	}
-	state, err := a.stateCreator.NewState(header.StateRoot())
+	state, err := state.New(a.db, header.StateRoot())
 	if err != nil {
 		return nil, err
 	}
+
 	signer, _ := header.Signer()
 	rt := runtime.New(a.chain.NewSeeker(header.ParentID()), state,
 		&xenv.BlockContext{
@@ -319,7 +324,7 @@ func (a *Accounts) handleRevision(revision string) (*block.Header, error) {
 		if err != nil {
 			return nil, utils.BadRequest(errors.WithMessage(err, "revision"))
 		}
-		h, err := a.chain.GetBlockHeader(blockID)
+		h, _, err := a.chain.GetBlockHeader(blockID)
 		if err != nil {
 			if a.chain.IsNotFound(err) {
 				return nil, utils.BadRequest(errors.WithMessage(err, "revision"))
@@ -335,7 +340,7 @@ func (a *Accounts) handleRevision(revision string) (*block.Header, error) {
 	if n > math.MaxUint32 {
 		return nil, utils.BadRequest(errors.WithMessage(errors.New("block number out of max uint32"), "revision"))
 	}
-	h, err := a.chain.GetTrunkBlockHeader(uint32(n))
+	h, err := a.chain.NewTrunk().GetBlockHeader(uint32(n))
 	if err != nil {
 		if a.chain.IsNotFound(err) {
 			return nil, utils.BadRequest(errors.WithMessage(err, "revision"))

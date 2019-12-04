@@ -9,13 +9,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/keystore"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/inconshreveable/log15"
 	isatty "github.com/mattn/go-isatty"
 	"github.com/pborman/uuid"
@@ -25,9 +29,10 @@ import (
 	"github.com/vechain/thor/chain"
 	"github.com/vechain/thor/cmd/thor/node"
 	"github.com/vechain/thor/cmd/thor/solo"
+	"github.com/vechain/thor/consensus"
 	"github.com/vechain/thor/genesis"
 	"github.com/vechain/thor/logdb"
-	"github.com/vechain/thor/lvldb"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/txpool"
@@ -123,7 +128,835 @@ func main() {
 	}
 }
 
+func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
+	go func() {
+		var (
+			n1 = uint32(0)
+			n2 = uint32(0)
+		)
+
+		for {
+			n1 = n2
+
+			for {
+				if chain.BestBlock().Header().Number() > n1+65536 {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+
+			pruner := db.NewTriePruner(context.TODO())
+
+			n2 = chain.BestBlock().Header().Number() + 20
+
+			fmt.Printf("Pruner: initiated [%v, %v]\n", n1, n2)
+
+			for {
+				if chain.BestBlock().Header().Number() > n2+20 {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+
+			fmt.Printf("Pruner: start [%v, %v]\n", n1, n2)
+
+			id1, err := chain.NewTrunk().GetBlockID(n1)
+			if err != nil {
+				panic(err)
+			}
+			id2, err := chain.NewTrunk().GetBlockID(n2)
+			if err != nil {
+				panic(err)
+			}
+
+			h1, iroot1, err := chain.GetBlockHeader(id1)
+			if err != nil {
+				panic(err)
+			}
+
+			h2, iroot2, err := chain.GetBlockHeader(id2)
+			if err != nil {
+				panic(err)
+			}
+			if n1 == 0 {
+				iroot1 = thor.Bytes32{}
+			}
+
+			inodes, ientries, err := pruner.Perm("i", iroot1, iroot2, nil)
+			if err != nil {
+
+				panic(err)
+			}
+
+			fmt.Println("Pruner: indexTrie node:", inodes, "entry:", ientries)
+
+			stateRoot1 := h1.StateRoot()
+			stateRoot2 := h2.StateRoot()
+
+			if n1 == 0 {
+				stateRoot1 = thor.Bytes32{}
+			}
+
+			var sNodes, sEntries int
+			accNodes, accEntries, err := pruner.Perm("a", stateRoot1, stateRoot2, func(key, blob1, blob2 []byte) error {
+				var sroot1, sroot2 thor.Bytes32
+				if len(blob1) > 0 {
+					var acc state.Account
+					if err := rlp.DecodeBytes(blob1, &acc); err != nil {
+						return err
+					}
+					sroot1 = thor.BytesToBytes32(acc.StorageRoot)
+				}
+				if len(blob2) > 0 {
+					var acc state.Account
+					if err := rlp.DecodeBytes(blob2, &acc); err != nil {
+						return err
+					}
+					sroot2 = thor.BytesToBytes32(acc.StorageRoot)
+				}
+				if sroot1 != sroot2 {
+					n, e, err := pruner.Perm("s"+string(key), sroot1, sroot2, nil)
+					if err != nil {
+						return err
+					}
+					sNodes += n
+					sEntries += e
+				}
+				return nil
+			})
+
+			if err != nil {
+				panic(err)
+			}
+
+			fmt.Println("Pruner: accountTrie node:", accNodes, "entry:", accEntries)
+			fmt.Println("Pruner: storageTries node:", sNodes, "entry:", sEntries)
+
+			for {
+				if chain.BestBlock().Header().Number() > n2+65536+20 {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+
+			fmt.Println("Pruner: deleting...")
+
+			deleted, err := pruner.Prune()
+			if err != nil {
+				panic(err)
+			}
+
+			fmt.Println("Pruner: delete nodes:", deleted, ", perm:", inodes, accNodes, sNodes, ", ratio:", float64((inodes+accNodes+sNodes)*100)/float64(deleted), "%")
+
+			// fmt.Println("Pruner: Compacting...")
+			// rg := util.BytesPrefix(oldPrefix)
+			// lowStore.Compact(kv.Range{
+			// 	From: rg.Start, To: rg.Limit})
+			// fmt.Println("Pruner: Compact done")
+
+		}
+
+	}()
+	return nil
+}
+
+/*
+func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
+	lowStore := db.LowStore()
+
+	go func() {
+		var (
+			n1       = uint32(0)
+			n2       = uint32(0)
+			rollingI = 0
+			bloom    = muxdb.NewBloom(256*1024*1024*8, 3)
+		)
+
+		type op struct {
+			del  bool
+			k, v []byte
+		}
+
+		var ops []op
+		flushBatch := func() error {
+			if len(ops) > 0 {
+				return lowStore.Batch(func(p kv.Putter) error {
+					for _, op := range ops {
+						if op.del {
+							p.Delete(op.k)
+						} else {
+							p.Put(op.k, op.v)
+						}
+					}
+					ops = nil
+					return nil
+				})
+			}
+			return nil
+		}
+
+		batchPut := func(k, v []byte) error {
+			ops = append(ops, op{
+				k: append([]byte(nil), k...),
+				v: append([]byte(nil), v...),
+			})
+			if len(ops) > 8192 {
+				return flushBatch()
+			}
+			return nil
+		}
+
+		batchDel := func(k []byte) error {
+			ops = append(ops, op{
+				del: true,
+				k:   append([]byte(nil), k...),
+			})
+			if len(ops) >= 8192 {
+				return flushBatch()
+			}
+			return nil
+		}
+
+		for {
+			n1 = n2
+
+			for {
+				if chain.BestBlock().Header().Number() > n1+65536 {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+
+			rollingI++
+			newPrefix, oldPrefix, maturePrefix := db.RollTrie(rollingI)
+
+			fmt.Printf("Pruner: rolling to prefix %x %x %x\n", newPrefix, oldPrefix, maturePrefix)
+			n2 = chain.BestBlock().Header().Number() + 20
+
+			for {
+				if chain.BestBlock().Header().Number() > n2+20 {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+
+			fmt.Printf("Pruner: start [%v, %v]\n", n1, n2)
+			indexEntries := 0
+			accEntries := 0
+			storageEntries := 0
+
+			id1, err := chain.NewTrunk().GetBlockID(n1)
+			if err != nil {
+				panic(err)
+			}
+			id2, err := chain.NewTrunk().GetBlockID(n2)
+			if err != nil {
+				panic(err)
+			}
+
+			h1, iroot1, err := chain.GetBlockHeader(id1)
+			if err != nil {
+				panic(err)
+			}
+
+			h2, iroot2, err := chain.GetBlockHeader(id2)
+			if err != nil {
+				panic(err)
+			}
+			if n1 == 0 {
+				iroot1 = thor.Bytes32{}
+			}
+
+			itr1 := db.NewTrieNoFillCache("i", iroot1, false)
+			itr2 := db.NewTrieNoFillCache("i", iroot2, false)
+
+			iit1, err := itr1.NodeIterator(nil)
+			if err != nil {
+				panic(err)
+			}
+			iit2, err := itr2.NodeIterator(nil)
+			if err != nil {
+				panic(err)
+			}
+
+			idiff, _ := trie.NewDifferenceIterator(iit1, iit2)
+			for idiff.Next(true) {
+				if h := idiff.Hash(); !h.IsZero() {
+					data, err := idiff.Node()
+					if err != nil {
+						panic(err)
+					}
+					if thor.Blake2b(data) != h {
+						panic("hehe")
+					}
+
+					indexEntries++
+
+					bloom.Add(h)
+					if err := batchPut(append(append(maturePrefix, 'i'), muxdb.MakeHashKey(h[:], idiff.Path())...), data); err != nil {
+						panic(err)
+					}
+				}
+			}
+
+			fmt.Println("Pruner: indexTrie entries ", indexEntries)
+
+			stateRoot1 := h1.StateRoot()
+			stateRoot2 := h2.StateRoot()
+
+			if n1 == 0 {
+				stateRoot1 = thor.Bytes32{}
+			}
+
+			tr1 := db.NewTrieNoFillCache("a", stateRoot1, false)
+			tr2 := db.NewTrieNoFillCache("a", stateRoot2, false)
+
+			it1, err := tr1.NodeIterator(nil)
+			if err != nil {
+				panic(err)
+			}
+			it2, err := tr2.NodeIterator(nil)
+			if err != nil {
+				panic(err)
+			}
+
+			diff, _ := trie.NewDifferenceIterator(it1, it2)
+			for diff.Next(true) {
+				if h := diff.Hash(); !h.IsZero() {
+					data, err := diff.Node()
+					if err != nil {
+						panic(err)
+					}
+					if thor.Blake2b(data) != h {
+						panic("hehe")
+					}
+
+					accEntries++
+					bloom.Add(h)
+					if err := batchPut(append(append(maturePrefix, 'a'), muxdb.MakeHashKey(h[:], diff.Path())...), data); err != nil {
+						panic(err)
+					}
+				}
+
+				if diff.Leaf() {
+					blob2 := diff.LeafBlob()
+					var acc2 state.Account
+					if err := rlp.DecodeBytes(blob2, &acc2); err != nil {
+						panic(err)
+					}
+
+					if len(acc2.StorageRoot) > 0 {
+						sroot2 := thor.BytesToBytes32(acc2.StorageRoot)
+						blob1, err := tr1.Get(diff.LeafKey())
+						if err != nil {
+							panic(err)
+						}
+						var sroot1 thor.Bytes32
+						if len(blob1) > 0 {
+							var acc1 state.Account
+							if err := rlp.DecodeBytes(blob1, &acc1); err != nil {
+								panic(err)
+							}
+							sroot1 = thor.BytesToBytes32(acc1.StorageRoot)
+						}
+						sprefix := []byte("s" + string(diff.LeafKey()))
+
+						sit1, err := db.NewTrieNoFillCache(string(sprefix), sroot1, false).NodeIterator(nil)
+						if err != nil {
+							panic(err)
+						}
+						sit2, err := db.NewTrieNoFillCache(string(sprefix), sroot2, false).NodeIterator(nil)
+						if err != nil {
+							panic(err)
+						}
+						sit, _ := trie.NewDifferenceIterator(sit1, sit2)
+						for sit.Next(true) {
+							if h := sit.Hash(); !h.IsZero() {
+								n, err := sit.Node()
+								if err != nil {
+									panic("xx")
+								}
+								if thor.Blake2b(n) != h {
+									panic("hehe")
+								}
+								storageEntries++
+								bloom.Add(h)
+								if err := batchPut(append(append(maturePrefix, sprefix...), muxdb.MakeHashKey(h[:], sit.Path())...), n); err != nil {
+									panic(err)
+								}
+							}
+						}
+						if err := sit.Error(); err != nil {
+							panic(err)
+						}
+					}
+				}
+			}
+			flushBatch()
+			fmt.Println("Pruner: account trie entries ", accEntries)
+			fmt.Println("Pruner: storage trie entries ", storageEntries)
+
+			for {
+				if chain.BestBlock().Header().Number() > n2+65536+20 {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+
+			fmt.Println("Pruner: deleting...")
+
+			deleted := 0
+
+			r := func() kv.Range {
+				rr := util.BytesPrefix(oldPrefix)
+				return kv.Range{
+					From: rr.Start,
+					To:   rr.Limit,
+				}
+			}()
+
+			for {
+				counter := 0
+				if err := lowStore.Iterate(r, func(key []byte, val []byte) bool {
+					if counter >= 8192 {
+						r.From = key
+						return false
+					}
+
+					deleted++
+					h := thor.BytesToBytes32(key)
+					if !bloom.Test(h) {
+						db.EvictTrieCache(h[:])
+					}
+					if err := batchDel(key); err != nil {
+						panic(err)
+					}
+					counter++
+
+					return true
+				}); err != nil {
+					panic(err)
+				}
+				if counter == 0 {
+					break
+				}
+			}
+
+			flushBatch()
+			fmt.Println("Pruner: delete entries:", deleted, ", mature:", indexEntries, accEntries, storageEntries, ", ratio:", float64((indexEntries+accEntries+storageEntries)*100)/float64(deleted), "%")
+
+			// fmt.Println("Pruner: Compacting...")
+			// rg := util.BytesPrefix(oldPrefix)
+			// lowStore.Compact(kv.Range{
+			// 	From: rg.Start, To: rg.Limit})
+			// fmt.Println("Pruner: Compact done")
+
+		}
+	}()
+
+	// go func() {
+	// 	// prune index trie
+	// 	var (
+	// 		bloom = thor.NewBigBloom(64, 3)
+	// 		gen   = uint32(0)
+	// 	)
+
+	// 	v, _ := configStore.Get([]byte("index-trie-pruned"))
+	// 	if len(v) == 4 {
+	// 		gen = binary.BigEndian.Uint32(v)
+	// 	}
+
+	// 	for {
+	// 		bloom.Reset()
+	// 		for {
+	// 			if chain.BestBlock().Header().Number() >= (gen+1)<<16+50 {
+	// 				break
+	// 			}
+	// 			time.Sleep(time.Second)
+	// 		}
+	// 		n1 := gen << 16
+	// 		n2 := (gen + 1) << 16
+	// 		gen++
+
+	// 		fmt.Printf("I Pruner: start [%v, %v]\n", n1, n2)
+
+	// 		// index trie
+
+	// 		id1, err := chain.NewTrunk().GetBlockID(n1)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+	// 		id2, err := chain.NewTrunk().GetBlockID(n2)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+
+	// 		_, root1, err := chain.GetBlockHeader(id1)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+	// 		_, root2, err := chain.GetBlockHeader(id2)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+
+	// 		indexTrieEntries := 0
+	// 		t1 := db.NewTrie("i", root1, n1, false)
+	// 		it1, err := t1.NodeIterator(nil)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+	// 		it2, err := db.NewTrie("i", root2, n2, false).NodeIterator(nil)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+	// 		it, _ := trie.NewDifferenceIterator(it1, it2)
+	// 		for it.Next(true) {
+	// 			if h := it.Hash(); !h.IsZero() {
+	// 				indexTrieEntries++
+	// 				bloom.Add(h)
+	// 			}
+	// 		}
+	// 		if err := it.Error(); err != nil {
+	// 			panic(err)
+	// 		}
+	// 		fmt.Println("I Pruner: index trie entries", indexTrieEntries)
+
+	// 		prefix := t1.Prefix()
+
+	// 		fmt.Printf("I Pruner: deleting prefix %x...\n", prefix)
+	// 		scaned := 0
+	// 		deleted := 0
+
+	// 		prefixLen := len(prefix)
+
+	// 		lowStore := db.LowStore()
+	// 		var tempKey [2 + 2 + 32]byte
+
+	// 		lowStore.Iterate(prefix, func(key, val []byte) error {
+	// 			scaned++
+	// 			lowStore.Batch(func(w kv.Putter) error {
+	// 				if bloom.Test(thor.BytesToBytes32(key[prefixLen:])) {
+	// 					copy(tempKey[:], key)
+	// 					tempKey[2] = 255
+	// 					tempKey[3] = 255
+	// 					w.Put(tempKey[:], val)
+	// 				} else {
+	// 					deleted++
+	// 				}
+	// 				w.Delete(key)
+	// 				return nil
+	// 			})
+	// 			return nil
+	// 		})
+
+	// 		fmt.Println("I Pruner: deleted", deleted, "/", scaned, "entries  ", float64(deleted*100)/float64(scaned), "%")
+	// 		mu.Lock()
+	// 		fmt.Println("I Pruner: do compact")
+
+	// 		if err := lowStore.Compact(prefix); err != nil {
+	// 			fmt.Println(err)
+	// 		}
+
+	// 		fmt.Println("I Pruner: compact done")
+	// 		mu.Unlock()
+	// 		var kk [4]byte
+	// 		binary.BigEndian.PutUint32(kk[:], gen)
+	// 		configStore.Put([]byte("index-trie-pruned"), kk[:])
+	// 	}
+	// }()
+	// go func() {
+	// 	var (
+	// 		gen    = uint32(0)
+	// 		ibloom = thor.NewBigBloom(64, 3)
+	// 		abloom = thor.NewBigBloom(64, 3)
+	// 		sbloom = thor.NewBigBloom(64, 3)
+	// 	)
+
+	// 	v, _ := configStore.Get([]byte("state-pruned"))
+	// 	if len(v) == 4 {
+	// 		gen = binary.BigEndian.Uint32(v)
+	// 	}
+
+	// 	for {
+	// 		ibloom.Reset()
+	// 		abloom.Reset()
+	// 		sbloom.Reset()
+	// 		for {
+	// 			if chain.BestBlock().Header().Number() >= (gen+1)<<16+50 {
+	// 				break
+	// 			}
+	// 			time.Sleep(time.Second)
+	// 		}
+	// 		n1 := gen << 16
+	// 		n2 := (gen + 1) << 16
+	// 		gen++
+
+	// 		fmt.Printf("Pruner: start [%v, %v]\n", n1, n2)
+
+	// 		id1, err := chain.NewTrunk().GetBlockID(n1)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+
+	// 		id2, err := chain.NewTrunk().GetBlockID(n2)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+
+	// 		h1, iroot1, err := chain.GetBlockHeader(id1)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+	// 		h2, iroot2, err := chain.GetBlockHeader(id2)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+
+	// 		{
+	// 			indexTrieEntries := 0
+	// 			t1 := db.NewTrie("i", iroot1, n1, false)
+	// 			it1, err := t1.NodeIterator(nil)
+	// 			if err != nil {
+	// 				panic(err)
+	// 			}
+	// 			it2, err := db.NewTrie("i", iroot2, n2, false).NodeIterator(nil)
+	// 			if err != nil {
+	// 				panic(err)
+	// 			}
+	// 			it, _ := trie.NewDifferenceIterator(it1, it2)
+	// 			for it.Next(true) {
+	// 				if h := it.Hash(); !h.IsZero() {
+	// 					indexTrieEntries++
+	// 					ibloom.Add(h)
+	// 				}
+	// 			}
+	// 			if err := it.Error(); err != nil {
+	// 				panic(err)
+	// 			}
+	// 			fmt.Println("Pruner: index trie entries", indexTrieEntries)
+	// 			prefix := t1.Prefix()
+
+	// 			fmt.Printf("Pruner: deleting prefix %x...\n", prefix)
+	// 			scaned := 0
+	// 			deleted := 0
+
+	// 			prefixLen := len(prefix)
+
+	// 			lowStore := db.LowStore()
+	// 			var tempKey [2 + 2 + 32]byte
+
+	// 			lowStore.Iterate(prefix, func(key, val []byte) error {
+	// 				scaned++
+	// 				lowStore.Batch(func(w kv.Putter) error {
+	// 					if ibloom.Test(thor.BytesToBytes32(key[prefixLen:])) {
+	// 						copy(tempKey[:], key)
+	// 						tempKey[1] = 255
+	// 						tempKey[2] = 255
+	// 						w.Put(tempKey[:], val)
+	// 					} else {
+	// 						deleted++
+	// 					}
+	// 					w.Delete(key)
+	// 					return nil
+	// 				})
+	// 				return nil
+	// 			})
+
+	// 			fmt.Println("Pruner: deleted", deleted, "/", scaned, "entries  ", float64(deleted*100)/float64(scaned), "%")
+	// 		}
+
+	// 		accountTrieEntries := 0
+	// 		storageTrieEntries := 0
+
+	// 		tr1 := db.NewTrie("a", h1.StateRoot(), n1, false)
+	// 		it1, err := tr1.NodeIterator(nil)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+	// 		tr2 := db.NewTrie("a", h2.StateRoot(), n2, false)
+	// 		it2, err := tr2.NodeIterator(nil)
+	// 		if err != nil {
+	// 			panic(err)
+	// 		}
+
+	// 		it, _ := trie.NewDifferenceIterator(it1, it2)
+	// 		for it.Next(true) {
+	// 			if h := it.Hash(); !h.IsZero() {
+	// 				abloom.Add(h)
+	// 				accountTrieEntries++
+	// 			}
+	// 			if it.Leaf() {
+	// 				blob2 := it.LeafBlob()
+	// 				var acc2 state.Account
+	// 				if err := rlp.DecodeBytes(blob2, &acc2); err != nil {
+	// 					panic(err)
+	// 				}
+
+	// 				if len(acc2.StorageRoot) > 0 {
+	// 					sroot2 := thor.BytesToBytes32(acc2.StorageRoot)
+	// 					blob1, err := tr1.Get(it.LeafKey())
+	// 					if err != nil {
+	// 						panic(err)
+	// 					}
+	// 					var sroot1 thor.Bytes32
+	// 					if len(blob1) > 0 {
+	// 						var acc1 state.Account
+	// 						if err := rlp.DecodeBytes(blob1, &acc1); err != nil {
+	// 							panic(err)
+	// 						}
+	// 						sroot1 = thor.BytesToBytes32(acc1.StorageRoot)
+	// 					}
+	// 					sit1, err := db.NewTrie("s", sroot1, n1, false).NodeIterator(nil)
+	// 					if err != nil {
+	// 						panic(err)
+	// 					}
+	// 					sit2, err := db.NewTrie("s", sroot2, n2, false).NodeIterator(nil)
+	// 					if err != nil {
+	// 						panic(err)
+	// 					}
+	// 					sit, _ := trie.NewDifferenceIterator(sit1, sit2)
+	// 					for sit.Next(true) {
+	// 						if h := sit.Hash(); !h.IsZero() {
+	// 							storageTrieEntries++
+	// 							sbloom.Add(h)
+	// 						}
+	// 					}
+	// 					if err := sit.Error(); err != nil {
+	// 						panic(err)
+	// 					}
+	// 				}
+	// 			}
+	// 		}
+	// 		if err := it.Error(); err != nil {
+	// 			panic(err)
+	// 		}
+	// 		fmt.Println("Pruner: account trie entries", accountTrieEntries)
+	// 		fmt.Println("Pruner: storage trie entries", storageTrieEntries)
+
+	// 		lowStore := db.LowStore()
+
+	// 		sprefix := db.NewTrie("s", thor.Bytes32{}, n1, false).Prefix()
+	// 		sprefixLen := len(sprefix)
+	// 		var tempKey [2 + 2 + 32]byte
+	// 		fmt.Printf("Pruner: deleting prefix %x...\n", sprefix)
+	// 		sscaned := 0
+	// 		sdeleted := 0
+	// 		lowStore.Iterate(sprefix, func(key, val []byte) error {
+	// 			sscaned++
+	// 			lowStore.Batch(func(w kv.Putter) error {
+	// 				if sbloom.Test(thor.BytesToBytes32(key[sprefixLen:])) {
+	// 					copy(tempKey[:], key)
+	// 					tempKey[1] = 255
+	// 					tempKey[2] = 255
+	// 					w.Put(tempKey[:], val)
+	// 				} else {
+	// 					sdeleted++
+	// 				}
+	// 				w.Delete(key)
+	// 				return nil
+	// 			})
+	// 			return nil
+	// 		})
+
+	// 		fmt.Println("Pruner: storage deleted", sdeleted, "/", sscaned, "entries  ", float64(sdeleted*100)/float64(sscaned), "%")
+
+	// 		for {
+	// 			if chain.BestBlock().Header().Number() >= (gen)<<16+65536+50 {
+	// 				break
+	// 			}
+	// 			time.Sleep(time.Second)
+	// 		}
+
+	// 		aprefix := db.NewTrie("a", thor.Bytes32{}, n1, false).Prefix()
+
+	// 		fmt.Printf("Pruner: deleting prefix %x...\n", aprefix)
+	// 		ascaned := 0
+	// 		adeleted := 0
+
+	// 		aprefixLen := len(aprefix)
+
+	// 		lowStore.Iterate(aprefix, func(key, val []byte) error {
+	// 			ascaned++
+	// 			lowStore.Batch(func(w kv.Putter) error {
+	// 				if abloom.Test(thor.BytesToBytes32(key[aprefixLen:])) {
+	// 					copy(tempKey[:], key)
+	// 					tempKey[1] = 255
+	// 					tempKey[2] = 255
+	// 					w.Put(tempKey[:], val)
+	// 				} else {
+	// 					adeleted++
+	// 				}
+	// 				w.Delete(key)
+	// 				return nil
+	// 			})
+	// 			return nil
+	// 		})
+
+	// 		fmt.Println("Pruner: account deleted", adeleted, "/", ascaned, "entries  ", float64(adeleted*100)/float64(ascaned), "%")
+
+	// 		// fmt.Println("Pruner: do compact")
+
+	// 		// if err := lowStore.Compact([]byte{aprefix[0], 0, 0}, db.NewTrie("a", thor.Bytes32{}, n2, false).Prefix()[:3]); err != nil {
+	// 		// 	fmt.Println(err)
+	// 		// }
+	// 		// fmt.Println("Pruner: compact done")
+
+	// 		var kk [4]byte
+	// 		binary.BigEndian.PutUint32(kk[:], gen)
+	// 		configStore.Put([]byte("state-pruned"), kk[:])
+	// 	}
+	// }()
+
+	return nil
+}
+*/
+
 func defaultAction(ctx *cli.Context) error {
+
+	// db, _ := muxdb.New("/Users/cola/hh4.db", &muxdb.Options{CacheSize: 2048})
+	// defer db.Close()
+
+	// // log.Info("")
+	// // tt := db.NewTrie("a", thor.MustParseBytes32("0x0d79f417846eb72f0ee9c303ee9dbc2d8ac5df1a3c6deba399afffddaf5937c6"), false)
+
+	// // for i := 0; i < 100000; i++ {
+	// // 	var b [4]byte
+	// // 	binary.BigEndian.PutUint32(b[:], uint32(i))
+	// // 	k := thor.Blake2b(b[:])
+	// // 	if _, err := tt.Get(k[:]); err != nil {
+	// // 		panic(err)
+	// // 	}
+	// // }
+
+	// // log.Info("")
+	// return nil
+
+	// tr := db.NewTrie("a", thor.Bytes32{}, false)
+	// // tr := db.NewTrie("a", thor.MustParseBytes32("0x276021cb60cd32283331f36111726bcbbe06f23767e5629da432c94809cb5048"), false)
+	// // log.Info("")
+	// // for i := 0; i < 6000000; i++ {
+	// // 	var b [4]byte
+	// // 	binary.BigEndian.PutUint32(b[:], uint32(i))
+	// // 	k := thor.Blake2b(b[:])
+	// // 	tr.Get(k[:])
+	// // }
+	// // log.Info("")
+	// for i := 0; i < 100; i++ {
+	// 	for j := 0; j < 60000; j++ {
+	// 		n := i*60000 + j
+	// 		var b [4]byte
+	// 		binary.BigEndian.PutUint32(b[:], uint32(n))
+	// 		k := thor.Blake2b(b[:])
+	// 		v := thor.Blake2b(k[:])
+	// 		tr.Update(k[:], v[:])
+	// 	}
+	// 	root, _ := tr.Commit()
+	// 	tr = db.NewTrie("a", root, false)
+	// 	fmt.Println(i, root)
+	// }
+	// return nil
+
 	exitSignal := handleExitSignal()
 
 	defer func() { log.Info("exited") }()
@@ -135,12 +968,303 @@ func defaultAction(ctx *cli.Context) error {
 	mainDB := openMainDB(ctx, instanceDir)
 	defer func() { log.Info("closing main database..."); mainDB.Close() }()
 
+	// f := func(p byte) {
+	// 	n := 0
+	// 	size := 0
+	// 	it := stateDB.NewIterator(*kv.NewRangeWithBytesPrefix([]byte{p}))
+	// 	for it.Next() {
+	// 		n++
+	// 		size += len(it.Value())
+	// 	}
+	// 	it.Release()
+	// 	fmt.Println(n, size)
+	// }
+	// f(0)
+	// f(1)
+	// f(2)
+	// f(3)
+
+	// lowStore := mainDB.LowStore()
+	// p1, p2, _ := mainDB.RollTrie(0)
+	// lowStore.Compact(util.BytesPrefix(p1).Start, util.BytesPrefix(p1).Limit)
+	// fmt.Println("1")
+	// lowStore.Compact(util.BytesPrefix(p2).Start, util.BytesPrefix(p2).Limit)
+	// return nil
+
 	skipLogs := ctx.Bool(skipLogsFlag.Name)
 
 	logDB := openLogDB(ctx, instanceDir)
 	defer func() { log.Info("closing log database..."); logDB.Close() }()
 
 	chain := initChain(gene, mainDB, logDB)
+
+	f, err := os.Open("/Users/cola/chain.testnet.rlp")
+	if err != nil {
+		panic(err)
+	}
+	prune(mainDB, chain)
+
+	r := rlp.NewStream(f, 0)
+
+	cons := consensus.New(chain, mainDB, forkConfig)
+
+	var stats blockStats
+	k := mclock.Now()
+
+	report := func(block *block.Block) {
+		log.Info(fmt.Sprintf("imported blocks (%v)", stats.processed), stats.LogContext(block.Header())...)
+		stats = blockStats{}
+		k = mclock.Now()
+	}
+
+	//	defer profile.Start().Stop()
+	//	for i := 0; i < 50000; i++ {
+	for {
+		startTime := mclock.Now()
+		var b block.Block
+		if err := r.Decode(&b); err != nil {
+			if err == io.EOF {
+				break
+			}
+			panic(err)
+		}
+		if b.Header().Number() == 0 {
+			continue
+		}
+
+		stage, receipts, err := cons.Process(&b, b.Header().Timestamp())
+		if err != nil {
+			panic(err)
+		}
+		execElapsed := mclock.Now() - startTime
+		if _, err := stage.Commit(); err != nil {
+			panic(err)
+		}
+
+		if err := chain.AddBlock(&b, receipts); err != nil {
+			panic(err)
+		}
+		commitElapsed := mclock.Now() - startTime - execElapsed
+		stats.UpdateProcessed(1, len(receipts), execElapsed, commitElapsed, b.Header().GasUsed())
+
+		if stats.processed > 0 &&
+			mclock.Now()-k > mclock.AbsTime(time.Second*2) {
+			report(&b)
+		}
+		select {
+		case <-exitSignal.Done():
+			return nil
+		default:
+		}
+	}
+	<-exitSignal.Done()
+	return nil
+	// log.Info("heh")
+	// n := chain.BestBlock().Header().Number()
+	// b := chain.NewTrunk()
+
+	// // id, _ := b.GetBlockID(n)
+	// // _, root, _ := chain.GetBlockHeader(id)
+
+	// // tr := mainDB.NewTrie("i", root, false)
+
+	// // it, _ := tr.NodeIterator(nil)
+
+	// // var nc, lc int
+	// // m := make(map[int]int)
+	// // for it.Next(true) {
+	// // 	if h := it.Hash(); !h.IsZero() {
+	// // 		nc++
+	// // 		m[len(it.Path())]++
+	// // 	}
+	// // 	if it.Leaf() {
+	// // 		lc++
+	// // 	}
+	// // }
+
+	// // fmt.Println(nc, lc)
+	// // fmt.Println(m)
+	// log.Info("")
+	// for i := uint32(0); i <= n; i++ {
+	// 	_, err := b.GetBlockID(i)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	// if i%10000 == 0 {
+	// 	// 	fmt.Println(i)
+	// 	// }
+	// }
+	// return nil
+	// fmt.Println("GO")
+	// defer profile.Start().Stop()
+	// for i := uint32(0); i <= 50000; i++ {
+	// 	_, err := b.GetBlockHeader(i)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// }
+	// s := rlp.NewStream(f, 0)
+
+	// for i := 0; i < 100; i++ {
+	// 	var b block.Block
+
+	// 	if err := s.Decode(&b); err != nil {
+	// 		panic(err)
+	// 	}
+	// 	fmt.Println(b.Header().Number())
+	// }
+
+	// for i := uint32(0); i < n; i++ {
+	// 	_, err := b.GetBlockHeader(i)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	if i%1000 == 0 {
+	// 		fmt.Println(i)
+	// 	}
+
+	// }
+	// return nil
+
+	// cons := consensus.New(chain, mainDB, forkConfig)
+	// for i := uint32(2165914); i < chain.BestBlock().Header().Number(); i++ {
+	// 	blk, err := chain.NewTrunk().GetBlock(i)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	_, _, err = cons.Process(blk, blk.Header().Timestamp())
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// }
+	// return nil
+
+	// go func() {
+	// 	defer profile.Start().Stop()
+	// 	time.Sleep(time.Minute)
+	// }()
+	// cons := consensus.New(chain, mainDB, forkConfig)
+
+	// for i := uint32(0); i < 10000; i++ {
+	// 	blk, err := chain.NewTrunk().GetBlock(3401001)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	_, _, err = cons.Process(blk, blk.Header().Timestamp())
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// }
+	// slow #2407590…2d9049c5 low gps
+	// profile 3189578 3363312 3358737 3363306
+
+	// b := chain.NewBranch(chain.BestBlock().Header().ID())
+	// n := chain.BestBlock().Header().Number()
+
+	// id, _ := b.GetBlockID(n)
+	// _, root, _ := chain.GetBlockHeader(id)
+
+	// it, _ := mainDB.NewTrie("", root, n, false).NodeIterator(nil)
+	// max := 0
+
+	// for it.Next(true) {
+	// 	if h := it.Hash(); !h.IsZero() {
+	// 		l := len(it.Path())
+	// 		if l > max {
+	// 			max = l
+	// 			fmt.Println(max)
+	// 		}
+
+	// 	}
+	// }
+
+	// for i := uint32(0); i < n; i++ {
+	// 	_, err := b.GetBlockID(i)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	if i%1000 == 0 {
+	// 		fmt.Println(i)
+	// 	}
+	// }
+	// return nil
+
+	// _, indexRoot, _ := chain.GetBlockHeader(chain.BestBlock().Header().ID())
+
+	// it, _ := triex.NewTrie(indexRoot, false).NodeIterator(nil)
+	// n := 0
+
+	// for it.Next(true) {
+	// 	if h := it.Hash(); !h.IsZero() {
+	// 		// fmt.Println(h)
+	// 		n++
+	// 	}
+	// }
+
+	// fmt.Println(n)
+	// return nil
+	// prune(triex, stateDB, chain)
+
+	// tr := chain.NewTrunk()
+
+	// var blocks []*block.Block
+	// for i := 3401831; i < 3401832; i++ {
+	// 	id, _ := tr.GetBlockID(uint32(i))
+	// 	b, _ := chain.GetBlock(id)
+	// 	blocks = append(blocks, b)
+	// }
+	// fmt.Println(len(blocks))
+
+	// con := consensus.New(chain, mainDB, forkConfig)
+	// for _, b := range blocks {
+	// 	_, _, err := con.Process(b, b.Header().Timestamp())
+	// 	fmt.Println(err)
+	// }
+
+	// defer profile.Start().Stop()
+
+	// for i := 0; i < 1; i++ {
+	// 	for _, b := range blocks {
+	// 		con.Process(b, b.Header().Timestamp())
+	// 	}
+	// }
+
+	// return nil
+	// tr := mainDB.NewTrie("a", chain.BestBlock().Header().StateRoot(), true)
+
+	// data, _ := tr.Get(thor.MustParseAddress("0x828cA60C9D6Dd6266249588dBE00a67dF83d5D4D").Bytes())
+	// var acc state.Account
+	// rlp.DecodeBytes(data, &acc)
+
+	// tt := mainDB.NewTrie("s"+string(thor.Blake2b(thor.MustParseAddress("0x828cA60C9D6Dd6266249588dBE00a67dF83d5D4D").Bytes()).Bytes()), thor.BytesToBytes32(acc.StorageRoot), false)
+	// it, _ := tt.NodeIterator(nil)
+
+	// n := 0
+	// l := 0
+	// s := 0
+	// m := make(map[int]int)
+	// for it.Next(true) {
+	// 	if !it.Hash().IsZero() {
+	// 		n++
+	// 		m[len(it.Path())]++
+
+	// 		if len(it.Path()) == 3 {
+	// 			v, _ := it.Node()
+	// 			s += len(v)
+	// 		}
+	// 		// fmt.Printf("%x\n", it.Path())
+	// 	}
+	// 	if it.Leaf() {
+	// 		l++
+	// 	}
+
+	// }
+	// fmt.Println(n, l, s)
+	// fmt.Println(m)
+	// return nil
+
+	// prune(mainDB, chain)
+
 	master := loadNodeMaster(ctx)
 
 	printStartupMessage1(gene, chain, master, instanceDir, forkConfig)
@@ -151,13 +1275,13 @@ func defaultAction(ctx *cli.Context) error {
 		}
 	}
 
-	txPool := txpool.New(chain, state.NewCreator(mainDB), defaultTxPoolOptions)
+	txPool := txpool.New(chain, mainDB, defaultTxPoolOptions)
 	defer func() { log.Info("closing tx pool..."); txPool.Close() }()
 
 	p2pcom := newP2PComm(ctx, chain, txPool, instanceDir)
 	apiHandler, apiCloser := api.New(
 		chain,
-		state.NewCreator(mainDB),
+		mainDB,
 		txPool,
 		logDB,
 		p2pcom.comm,
@@ -180,7 +1304,7 @@ func defaultAction(ctx *cli.Context) error {
 	return node.New(
 		master,
 		chain,
-		state.NewCreator(mainDB),
+		mainDB,
 		logDB,
 		txPool,
 		filepath.Join(instanceDir, "tx.stash"),
@@ -200,9 +1324,11 @@ func soloAction(ctx *cli.Context) error {
 	// Solo forks from the start
 	forkConfig := thor.ForkConfig{}
 
-	var mainDB *lvldb.LevelDB
-	var logDB *logdb.LogDB
-	var instanceDir string
+	var (
+		mainDB      *muxdb.MuxDB
+		logDB       *logdb.LogDB
+		instanceDir string
+	)
 
 	if ctx.Bool("persist") {
 		instanceDir = makeInstanceDir(ctx, gene)
@@ -210,7 +1336,7 @@ func soloAction(ctx *cli.Context) error {
 		logDB = openLogDB(ctx, instanceDir)
 	} else {
 		instanceDir = "Memory"
-		mainDB = openMemMainDB()
+		mainDB = openMemDB()
 		logDB = openMemLogDB()
 	}
 
@@ -222,12 +1348,12 @@ func soloAction(ctx *cli.Context) error {
 		return err
 	}
 
-	txPool := txpool.New(chain, state.NewCreator(mainDB), defaultTxPoolOptions)
+	txPool := txpool.New(chain, mainDB, defaultTxPoolOptions)
 	defer func() { log.Info("closing tx pool..."); txPool.Close() }()
 
 	apiHandler, apiCloser := api.New(
 		chain,
-		state.NewCreator(mainDB),
+		mainDB,
 		txPool,
 		logDB,
 		solo.Communicator{},
@@ -245,7 +1371,7 @@ func soloAction(ctx *cli.Context) error {
 	printSoloStartupMessage(gene, chain, instanceDir, apiURL, forkConfig)
 
 	return solo.New(chain,
-		state.NewCreator(mainDB),
+		mainDB,
 		logDB,
 		txPool,
 		uint64(ctx.Int("gas-limit")),
@@ -361,7 +1487,7 @@ func seekLogDBSyncPosition(chain *chain.Chain, logDB *logdb.LogDB) (uint32, erro
 		seekStart = best.Number() - 1
 	}
 
-	header, err := chain.GetTrunkBlockHeader(seekStart)
+	header, err := chain.NewTrunk().GetBlockHeader(seekStart)
 	if err != nil {
 		return 0, err
 	}
@@ -375,7 +1501,7 @@ func seekLogDBSyncPosition(chain *chain.Chain, logDB *logdb.LogDB) (uint32, erro
 			break
 		}
 
-		header, err = chain.GetBlockHeader(header.ParentID())
+		header, _, err = chain.GetBlockHeader(header.ParentID())
 		if err != nil {
 			return 0, err
 		}
@@ -426,7 +1552,7 @@ func syncLogDB(ctx context.Context, chain *chain.Chain, logDB *logdb.LogDB, veri
 		task.ForBlock(b.Header())
 		txs := b.Transactions()
 		if len(txs) > 0 {
-			receipts, err := chain.GetBlockReceipts(b.Header().ID())
+			receipts, err := chain.GetReceipts(b.Header().ID())
 			if err != nil {
 				return errors.Wrap(err, "get block receipts")
 			}
@@ -464,4 +1590,41 @@ func syncLogDB(ctx context.Context, chain *chain.Chain, logDB *logdb.LogDB, veri
 	}
 	pb.Finish()
 	return nil
+}
+
+type blockStats struct {
+	exec, commit               mclock.AbsTime
+	txs                        int
+	usedGas                    uint64
+	processed, queued, ignored int
+}
+
+func (s *blockStats) UpdateProcessed(n int, txs int, exec, commit mclock.AbsTime, usedGas uint64) {
+	s.processed += n
+	s.txs += txs
+	s.exec += exec
+	s.commit += commit
+	s.usedGas += usedGas
+}
+
+func (s *blockStats) UpdateIgnored(n int) {
+	s.ignored += n
+}
+
+func (s *blockStats) UpdateQueued(n int) {
+	s.queued += n
+}
+
+func (s *blockStats) LogContext(last *block.Header) []interface{} {
+	return []interface{}{
+		"txs", s.txs,
+		"mgas", float64(s.usedGas) / 1000 / 1000,
+		"et", fmt.Sprintf("%v|%v", common.PrettyDuration(s.exec), common.PrettyDuration(s.commit)),
+		"mgas/s", float64(s.usedGas) * 1000 / float64(s.exec+s.commit),
+		"id", shortID(last.ID()),
+	}
+}
+
+func shortID(id thor.Bytes32) string {
+	return fmt.Sprintf("[#%v…%x]", block.Number(id), id[28:])
 }

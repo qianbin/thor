@@ -8,9 +8,11 @@ package consensus
 import (
 	"fmt"
 
+	"github.com/hashicorp/golang-lru/simplelru"
 	"github.com/vechain/thor/block"
 	"github.com/vechain/thor/builtin"
 	"github.com/vechain/thor/chain"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/runtime"
 	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
@@ -22,18 +24,21 @@ import (
 // and predicate which trunk it belong to.
 type Consensus struct {
 	chain                *chain.Chain
-	stateCreator         *state.Creator
+	db                   *muxdb.MuxDB
 	forkConfig           thor.ForkConfig
 	correctReceiptsRoots map[string]string
+	candidatesCache      *simplelru.LRU
 }
 
 // New create a Consensus instance.
-func New(chain *chain.Chain, stateCreator *state.Creator, forkConfig thor.ForkConfig) *Consensus {
+func New(chain *chain.Chain, db *muxdb.MuxDB, forkConfig thor.ForkConfig) *Consensus {
+	candidatesCache, _ := simplelru.NewLRU(16, nil)
 	return &Consensus{
 		chain:                chain,
-		stateCreator:         stateCreator,
+		db:                   db,
 		forkConfig:           forkConfig,
 		correctReceiptsRoots: thor.LoadCorrectReceiptsRoots(),
+		candidatesCache:      candidatesCache,
 	}
 }
 
@@ -41,15 +46,15 @@ func New(chain *chain.Chain, stateCreator *state.Creator, forkConfig thor.ForkCo
 func (c *Consensus) Process(blk *block.Block, nowTimestamp uint64) (*state.Stage, tx.Receipts, error) {
 	header := blk.Header()
 
-	if _, err := c.chain.GetBlockHeader(header.ID()); err != nil {
-		if !c.chain.IsNotFound(err) {
-			return nil, nil, err
-		}
-	} else {
-		return nil, nil, errKnownBlock
-	}
+	// if _, _, err := c.chain.GetBlockHeader(header.ID()); err != nil {
+	// 	if !c.chain.IsNotFound(err) {
+	// 		return nil, nil, err
+	// 	}
+	// } else {
+	// 	return nil, nil, errKnownBlock
+	// }
 
-	parentHeader, err := c.chain.GetBlockHeader(header.ParentID())
+	parentHeader, _, err := c.chain.GetBlockHeader(header.ParentID())
 	if err != nil {
 		if !c.chain.IsNotFound(err) {
 			return nil, nil, err
@@ -57,7 +62,7 @@ func (c *Consensus) Process(blk *block.Block, nowTimestamp uint64) (*state.Stage
 		return nil, nil, errParentMissing
 	}
 
-	state, err := c.stateCreator.NewState(parentHeader.StateRoot())
+	state, err := state.New(c.db, parentHeader.StateRoot())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -93,19 +98,20 @@ func (c *Consensus) NewRuntimeForReplay(header *block.Header, skipPoA bool) (*ru
 	if err != nil {
 		return nil, err
 	}
-	parentHeader, err := c.chain.GetBlockHeader(header.ParentID())
+	parentHeader, _, err := c.chain.GetBlockHeader(header.ParentID())
 	if err != nil {
 		if !c.chain.IsNotFound(err) {
 			return nil, err
 		}
 		return nil, errParentMissing
 	}
-	state, err := c.stateCreator.NewState(parentHeader.StateRoot())
+	state, err := state.New(c.db, parentHeader.StateRoot())
 	if err != nil {
 		return nil, err
 	}
+
 	if !skipPoA {
-		if err := c.validateProposer(header, parentHeader, state); err != nil {
+		if _, err := c.validateProposer(header, parentHeader, state); err != nil {
 			return nil, err
 		}
 	}

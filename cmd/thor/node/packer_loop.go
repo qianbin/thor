@@ -114,17 +114,23 @@ func (n *Node) pack(flow *packer.Flow) error {
 		return errors.WithMessage(err, "commit state")
 	}
 
-	fork, err := n.commitBlock(newBlock, receipts)
+	prevTrunk, curTrunk, err := n.commitBlock(newBlock, receipts)
 	if err != nil {
 		return errors.WithMessage(err, "commit block")
 	}
 	commitElapsed := mclock.Now() - startTime - execElapsed
 
-	n.processFork(fork)
-
-	if len(fork.Trunk) > 0 {
+	n.processFork(prevTrunk, curTrunk)
+	if prevTrunk.HeadID() != curTrunk.HeadID() {
 		n.comm.BroadcastBlock(newBlock)
 		log.Info("📦 new block packed",
+			"txs", len(receipts),
+			"mgas", float64(newBlock.Header().GasUsed())/1000/1000,
+			"et", fmt.Sprintf("%v|%v", common.PrettyDuration(execElapsed), common.PrettyDuration(commitElapsed)),
+			"id", shortID(newBlock.Header().ID()),
+		)
+	} else {
+		log.Warn("side block packed",
 			"txs", len(receipts),
 			"mgas", float64(newBlock.Header().GasUsed())/1000/1000,
 			"et", fmt.Sprintf("%v|%v", common.PrettyDuration(execElapsed), common.PrettyDuration(commitElapsed)),

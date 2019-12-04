@@ -113,7 +113,7 @@ func (c *Communicator) findCommonAncestor(peer *Peer, headNum uint32) (uint32, e
 		if err != nil {
 			return false, err
 		}
-		id, err := c.chain.GetTrunkBlockID(num)
+		id, err := c.chain.NewTrunk().GetBlockID(num)
 		if err != nil {
 			return false, err
 		}

@@ -12,15 +12,15 @@ import (
 
 // Seeker to seek block by given number on the chain defined by head block ID.
 type Seeker struct {
-	chain       *Chain
-	headBlockID thor.Bytes32
-	err         error
+	chain  *Chain
+	branch *Branch
+	err    error
 }
 
-func newSeeker(chain *Chain, headBlockID thor.Bytes32) *Seeker {
+func newSeeker(chain *Chain, branch *Branch) *Seeker {
 	return &Seeker{
-		chain:       chain,
-		headBlockID: headBlockID,
+		chain:  chain,
+		branch: branch,
 	}
 }
 
@@ -37,17 +37,16 @@ func (s *Seeker) Err() error {
 
 // GetID returns block ID by the given number.
 func (s *Seeker) GetID(num uint32) thor.Bytes32 {
-	if num > block.Number(s.headBlockID) {
-		panic("num exceeds head block")
+	id, err := s.branch.GetBlockID(num)
+	if err != nil {
+		s.setError(err)
 	}
-	id, err := s.chain.GetAncestorBlockID(s.headBlockID, num)
-	s.setError(err)
 	return id
 }
 
 // GetHeader returns block header by the given number.
 func (s *Seeker) GetHeader(id thor.Bytes32) *block.Header {
-	header, err := s.chain.GetBlockHeader(id)
+	header, _, err := s.chain.GetBlockHeader(id)
 	if err != nil {
 		s.setError(err)
 		return &block.Header{}

@@ -31,18 +31,15 @@ func New(chain *chain.Chain, pool *txpool.TxPool) *Transactions {
 }
 
 func (t *Transactions) getRawTransaction(txID thor.Bytes32, blockID thor.Bytes32) (*rawTransaction, error) {
-	txMeta, err := t.chain.GetTransactionMeta(txID, blockID)
+	tx, txMeta, err := t.chain.NewBranch(blockID).GetTransaction(txID)
 	if err != nil {
 		if t.chain.IsNotFound(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	tx, err := t.chain.GetTransaction(txMeta.BlockID, txMeta.Index)
-	if err != nil {
-		return nil, err
-	}
-	block, err := t.chain.GetBlock(txMeta.BlockID)
+
+	header, _, err := t.chain.GetBlockHeader(txMeta.BlockID)
 	if err != nil {
 		return nil, err
 	}
@@ -53,54 +50,51 @@ func (t *Transactions) getRawTransaction(txID thor.Bytes32, blockID thor.Bytes32
 	return &rawTransaction{
 		RawTx: RawTx{hexutil.Encode(raw)},
 		Meta: TxMeta{
-			BlockID:        block.Header().ID(),
-			BlockNumber:    block.Header().Number(),
-			BlockTimestamp: block.Header().Timestamp(),
+			BlockID:        header.ID(),
+			BlockNumber:    header.Number(),
+			BlockTimestamp: header.Timestamp(),
 		},
 	}, nil
 }
 
 func (t *Transactions) getTransactionByID(txID thor.Bytes32, blockID thor.Bytes32) (*Transaction, error) {
-	txMeta, err := t.chain.GetTransactionMeta(txID, blockID)
+	tx, txMeta, err := t.chain.NewBranch(blockID).GetTransaction(txID)
 	if err != nil {
 		if t.chain.IsNotFound(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	tx, err := t.chain.GetTransaction(txMeta.BlockID, txMeta.Index)
+
+	header, _, err := t.chain.GetBlockHeader(txMeta.BlockID)
 	if err != nil {
 		return nil, err
 	}
-	h, err := t.chain.GetBlockHeader(txMeta.BlockID)
-	if err != nil {
-		return nil, err
-	}
-	return convertTransaction(tx, h, txMeta.Index)
+	return convertTransaction(tx, header, txMeta.Index)
 }
 
 //GetTransactionReceiptByID get tx's receipt
 func (t *Transactions) getTransactionReceiptByID(txID thor.Bytes32, blockID thor.Bytes32) (*Receipt, error) {
-	txMeta, err := t.chain.GetTransactionMeta(txID, blockID)
+	branch := t.chain.NewBranch(blockID)
+	tx, txMeta, err := branch.GetTransaction(txID)
 	if err != nil {
 		if t.chain.IsNotFound(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	tx, err := t.chain.GetTransaction(txMeta.BlockID, txMeta.Index)
+
+	receipt, err := branch.GetReceipt(txID)
 	if err != nil {
 		return nil, err
 	}
-	h, err := t.chain.GetBlockHeader(txMeta.BlockID)
+
+	header, _, err := t.chain.GetBlockHeader(txMeta.BlockID)
 	if err != nil {
 		return nil, err
 	}
-	receipt, err := t.chain.GetTransactionReceipt(txMeta.BlockID, txMeta.Index)
-	if err != nil {
-		return nil, err
-	}
-	return convertReceipt(receipt, h, tx)
+
+	return convertReceipt(receipt, header, tx)
 }
 func (t *Transactions) handleSendTransaction(w http.ResponseWriter, req *http.Request) error {
 	var rawTx *RawTx
@@ -136,7 +130,7 @@ func (t *Transactions) handleGetTransactionByID(w http.ResponseWriter, req *http
 	if err != nil {
 		return utils.BadRequest(errors.WithMessage(err, "head"))
 	}
-	h, err := t.chain.GetBlockHeader(head)
+	h, _, err := t.chain.GetBlockHeader(head)
 	if err != nil {
 		if t.chain.IsNotFound(err) {
 			return utils.BadRequest(errors.WithMessage(err, "head"))
@@ -172,7 +166,7 @@ func (t *Transactions) handleGetTransactionReceiptByID(w http.ResponseWriter, re
 	if err != nil {
 		return utils.BadRequest(errors.WithMessage(err, "head"))
 	}
-	h, err := t.chain.GetBlockHeader(head)
+	h, _, err := t.chain.GetBlockHeader(head)
 	if err != nil {
 		if t.chain.IsNotFound(err) {
 			return utils.BadRequest(errors.WithMessage(err, "head"))

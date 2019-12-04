@@ -8,7 +8,10 @@ require (
 	github.com/beevik/ntp v0.2.0
 	github.com/btcsuite/btcd v0.0.0-20171128150713-2e60448ffcc6 // indirect
 	github.com/cespare/cp v1.1.1 // indirect
-	github.com/davecgh/go-spew v1.1.0
+	github.com/cespare/xxhash v1.1.0 // indirect
+	github.com/cockroachdb/pebble v0.0.0-20191022203227-cc4902e7a32b // indirect
+	github.com/coocood/freecache v1.1.0
+	github.com/davecgh/go-spew v1.1.1
 	github.com/deckarep/golang-set v0.0.0-20171013212420-1d4478f51bed // indirect
 	github.com/elastic/gosigar v0.10.5
 	github.com/elazarl/go-bindata-assetfs v1.0.0
@@ -30,15 +33,20 @@ require (
 	github.com/mattn/go-tty v0.0.0-20180219170247-931426f7535a
 	github.com/pborman/uuid v0.0.0-20170612153648-e790cca94e6c
 	github.com/pkg/errors v0.8.0
+	github.com/pkg/profile v1.3.0
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/rcrowley/go-metrics v0.0.0-20171128170426-e181e095bae9
 	github.com/rjeczalik/notify v0.9.1 // indirect
-	github.com/stretchr/testify v1.1.4
+	github.com/stretchr/testify v1.2.2
 	github.com/syndtr/goleveldb v1.0.1-0.20190923125748-758128399b1d
-	golang.org/x/crypto v0.0.0-20180820150726-614d502a4dac
+	golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2
 	gopkg.in/cheggaaa/pb.v1 v1.0.28
 	gopkg.in/karalabe/cookiejar.v2 v2.0.0-20150724131613-8dcd6a7f4951
 	gopkg.in/olebedev/go-duktape.v3 v3.0.0-20180723110524-d53328019b21
 	gopkg.in/urfave/cli.v1 v1.20.0
 	gopkg.in/yaml.v2 v2.2.2
 )
+
+replace github.com/syndtr/goleveldb v1.0.1-0.20190923125748-758128399b1d => github.com/qianbin/goleveldb v0.0.0-20191011031249-7356cd382be0
+
+replace github.com/coocood/freecache v1.1.0 => github.com/qianbin/freecache v0.0.0-20191011031249-408135652401

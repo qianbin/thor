@@ -8,42 +8,41 @@ package state
 import (
 	"github.com/ethereum/go-ethereum/rlp"
 	lru "github.com/hashicorp/golang-lru"
-	"github.com/vechain/thor/kv"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/thor"
-	"github.com/vechain/thor/trie"
 )
 
-var codeCache, _ = lru.New(512)
+var codeCache, _ = lru.NewARC(4096)
 
 // cachedObject to cache code and storage of an account.
 type cachedObject struct {
-	kv   kv.GetPutter
+	db   *muxdb.MuxDB
 	data Account
+	addr thor.Address
 
 	cache struct {
 		code        []byte
-		storageTrie trieReader
+		storageTrie muxdb.Trie
 		storage     map[thor.Bytes32]rlp.RawValue
 	}
 }
 
-func newCachedObject(kv kv.GetPutter, data *Account) *cachedObject {
-	return &cachedObject{kv: kv, data: *data}
+func newCachedObject(db *muxdb.MuxDB, data *Account, addr thor.Address) *cachedObject {
+	return &cachedObject{db: db, data: *data, addr: addr}
 }
 
-func (co *cachedObject) getOrCreateStorageTrie() (trieReader, error) {
-	if co.cache.storageTrie != nil {
-		return co.cache.storageTrie, nil
+func (co *cachedObject) getOrCreateStorageTrie() (muxdb.Trie, error) {
+	if co.cache.storageTrie == nil {
+		tr, err := co.db.NewTrie(
+			"s"+string(thor.Blake2b(co.addr[:]).Bytes()),
+			thor.BytesToBytes32(co.data.StorageRoot),
+			true)
+		if err != nil {
+			return nil, err
+		}
+		co.cache.storageTrie = tr
 	}
-
-	root := thor.BytesToBytes32(co.data.StorageRoot)
-
-	trie, err := trie.NewSecure(root, co.kv, 0)
-	if err != nil {
-		return nil, err
-	}
-	co.cache.storageTrie = trie
-	return trie, nil
+	return co.cache.storageTrie, nil
 }
 
 // GetStorage returns storage value for given key.
@@ -65,7 +64,7 @@ func (co *cachedObject) GetStorage(key thor.Bytes32) (rlp.RawValue, error) {
 	}
 
 	// load from trie
-	v, err := loadStorage(trie, key)
+	v, err := trie.Get(key[:])
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +87,7 @@ func (co *cachedObject) GetCode() ([]byte, error) {
 			return code.([]byte), nil
 		}
 
-		code, err := co.kv.Get(co.data.CodeHash)
+		code, err := co.db.NewStore("c/").Get(co.data.CodeHash)
 		if err != nil {
 			return nil, err
 		}

@@ -19,8 +19,8 @@ import (
 	"github.com/vechain/thor/api/utils"
 	"github.com/vechain/thor/chain"
 	"github.com/vechain/thor/consensus"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/runtime"
-	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/tracers"
 	"github.com/vechain/thor/trie"
@@ -31,14 +31,14 @@ var devNetGenesisID = thor.MustParseBytes32("0x00000000973ceb7f343a58b08f0693d67
 
 type Debug struct {
 	chain      *chain.Chain
-	stateC     *state.Creator
+	db         *muxdb.MuxDB
 	forkConfig thor.ForkConfig
 }
 
-func New(chain *chain.Chain, stateC *state.Creator, forkConfig thor.ForkConfig) *Debug {
+func New(chain *chain.Chain, db *muxdb.MuxDB, forkConfig thor.ForkConfig) *Debug {
 	return &Debug{
 		chain,
-		stateC,
+		db,
 		forkConfig,
 	}
 }
@@ -61,7 +61,7 @@ func (d *Debug) handleTxEnv(ctx context.Context, blockID thor.Bytes32, txIndex u
 	skipPoA := d.chain.GenesisBlock().Header().ID() == devNetGenesisID
 	rt, err := consensus.New(
 		d.chain,
-		d.stateC,
+		d.db,
 		d.forkConfig,
 	).NewRuntimeForReplay(block.Header(), skipPoA)
 	if err != nil {
@@ -172,8 +172,10 @@ func (d *Debug) debugStorage(ctx context.Context, contractAddress thor.Address, 
 	return storageRangeAt(storageTrie, keyStart, maxResult)
 }
 
-func storageRangeAt(t *trie.SecureTrie, start []byte, maxResult int) (*StorageRangeResult, error) {
-	it := trie.NewIterator(t.NodeIterator(start))
+func storageRangeAt(t muxdb.Trie, start []byte, maxResult int) (*StorageRangeResult, error) {
+	nodeIt := t.NodeIterator(start)
+
+	it := trie.NewIterator(nodeIt)
 	result := StorageRangeResult{Storage: StorageMap{}}
 	for i := 0; i < maxResult && it.Next(); i++ {
 		_, content, _, err := rlp.Split(it.Value)
@@ -182,16 +184,21 @@ func storageRangeAt(t *trie.SecureTrie, start []byte, maxResult int) (*StorageRa
 		}
 		v := thor.BytesToBytes32(content)
 		e := StorageEntry{Value: &v}
-		if preimage := t.GetKey(it.Key); preimage != nil {
-			preimage := thor.BytesToBytes32(preimage)
-			e.Key = &preimage
-		}
+
+		preimage := thor.BytesToBytes32(t.GetKeyPreimage(thor.BytesToBytes32(it.Key)))
+		e.Key = &preimage
+
 		result.Storage[thor.BytesToBytes32(it.Key).String()] = e
 	}
 	if it.Next() {
 		next := thor.BytesToBytes32(it.Key)
 		result.NextKey = &next
 	}
+
+	if it.Err != nil {
+		return nil, it.Err
+	}
+
 	return &result, nil
 }
 
@@ -236,7 +243,7 @@ func (d *Debug) parseTarget(target string) (blockID thor.Bytes32, txIndex uint64
 		if err != nil {
 			return thor.Bytes32{}, 0, 0, utils.BadRequest(errors.WithMessage(err, "target[1]"))
 		}
-		txMeta, err := d.chain.GetTransactionMeta(txID, blockID)
+		txMeta, err := d.chain.NewBranch(blockID).GetTransactionMeta(txID)
 		if err != nil {
 			if d.chain.IsNotFound(err) {
 				return thor.Bytes32{}, 0, 0, utils.Forbidden(errors.New("transaction not found"))

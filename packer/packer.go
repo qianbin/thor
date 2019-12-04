@@ -6,10 +6,10 @@
 package packer
 
 import (
-	"github.com/pkg/errors"
 	"github.com/vechain/thor/block"
 	"github.com/vechain/thor/builtin"
 	"github.com/vechain/thor/chain"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/poa"
 	"github.com/vechain/thor/runtime"
 	"github.com/vechain/thor/state"
@@ -21,7 +21,7 @@ import (
 // Packer to pack txs and build new blocks.
 type Packer struct {
 	chain          *chain.Chain
-	stateCreator   *state.Creator
+	db             *muxdb.MuxDB
 	nodeMaster     thor.Address
 	beneficiary    *thor.Address
 	targetGasLimit uint64
@@ -32,14 +32,14 @@ type Packer struct {
 // The beneficiary is optional, it defaults to endorsor if not set.
 func New(
 	chain *chain.Chain,
-	stateCreator *state.Creator,
+	db *muxdb.MuxDB,
 	nodeMaster thor.Address,
 	beneficiary *thor.Address,
 	forkConfig thor.ForkConfig) *Packer {
 
 	return &Packer{
 		chain,
-		stateCreator,
+		db,
 		nodeMaster,
 		beneficiary,
 		0,
@@ -49,9 +49,9 @@ func New(
 
 // Schedule schedule a packing flow to pack new block upon given parent and clock time.
 func (p *Packer) Schedule(parent *block.Header, nowTimestamp uint64) (flow *Flow, err error) {
-	state, err := p.stateCreator.NewState(parent.StateRoot())
+	state, err := state.New(p.db, parent.StateRoot())
 	if err != nil {
-		return nil, errors.Wrap(err, "state")
+		return nil, err
 	}
 
 	// Before process hook of VIP-191, update builtin extension contract's code to V2
@@ -123,9 +123,9 @@ func (p *Packer) Schedule(parent *block.Header, nowTimestamp uint64) (flow *Flow
 // It will skip the PoA verification and scheduling, and the block produced by
 // the returned flow is not in consensus.
 func (p *Packer) Mock(parent *block.Header, targetTime uint64, gasLimit uint64) (*Flow, error) {
-	state, err := p.stateCreator.NewState(parent.StateRoot())
+	state, err := state.New(p.db, parent.StateRoot())
 	if err != nil {
-		return nil, errors.Wrap(err, "state")
+		return nil, err
 	}
 
 	// Before process hook of VIP-191, update builtin extension contract's code to V2
