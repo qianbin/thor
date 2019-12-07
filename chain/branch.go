@@ -71,16 +71,12 @@ func (b *Branch) GetTransactionMeta(id thor.Bytes32) (*TxMeta, error) {
 		return nil, errNotFound
 	}
 
-	var loc txLocation
-	if err := rlp.DecodeBytes(enc, &loc); err != nil {
+	var meta TxMeta
+	if err := rlp.DecodeBytes(enc, &meta); err != nil {
 		return nil, err
 	}
 
-	blockID, err := b.GetBlockID(loc.BlockNumber)
-	if err != nil {
-		return nil, err
-	}
-	return &TxMeta{blockID, loc.Index, loc.Reverted}, nil
+	return &meta, nil
 }
 
 func (b *Branch) GetBlockHeader(num uint32) (*block.Header, error) {
@@ -137,7 +133,7 @@ func (b *Branch) Exist(id thor.Bytes32) (bool, error) {
 }
 
 // Diff returns IDs of all blocks which are not on branch specified by otherHeadID.
-func (b *Branch) Diff(otherBranch *Branch) ([]thor.Bytes32, error) {
+func (b *Branch) Diverge(other *Branch) ([]thor.Bytes32, error) {
 	var ids []thor.Bytes32
 	for i := int64(block.Number(b.headID)); i >= 0; i-- {
 		id, err := b.GetBlockID(uint32(i))
@@ -160,12 +156,6 @@ func (b *Branch) Diff(otherBranch *Branch) ([]thor.Bytes32, error) {
 	return ids, nil
 }
 
-type txLocation struct {
-	BlockNumber uint32
-	Index       uint64
-	Reverted    bool
-}
-
 func (c *Chain) indexBlock(indexRoot thor.Bytes32, block *block.Block, receipts tx.Receipts) (thor.Bytes32, error) {
 	trie, err := c.db.NewTrie("i", indexRoot, false)
 	if err != nil {
@@ -179,12 +169,11 @@ func (c *Chain) indexBlock(indexRoot thor.Bytes32, block *block.Block, receipts 
 	}
 
 	// record tx locations
-	num := block.Header().Number()
 	for i, tx := range block.Transactions() {
-		enc, err := rlp.EncodeToBytes(&txLocation{
-			BlockNumber: num,
-			Index:       uint64(i),
-			Reverted:    receipts[i].Reverted,
+		enc, err := rlp.EncodeToBytes(&TxMeta{
+			BlockID:  id,
+			Index:    uint64(i),
+			Reverted: receipts[i].Reverted,
 		})
 		if err != nil {
 			return thor.Bytes32{}, err
@@ -194,4 +183,14 @@ func (c *Chain) indexBlock(indexRoot thor.Bytes32, block *block.Block, receipts 
 		}
 	}
 	return trie.Commit()
+}
+
+// TxMeta contains information about a tx is settled.
+type TxMeta struct {
+	BlockID thor.Bytes32
+
+	// Index the position of the tx in block's txs.
+	Index uint64 // rlp require uint64.
+
+	Reverted bool
 }

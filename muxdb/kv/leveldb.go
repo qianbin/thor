@@ -61,12 +61,13 @@ func (l *levelEngine) Snapshot(fn func(Getter) error) error {
 	})
 }
 
-func (l *levelEngine) Batch(fn func(Putter) error) error {
+func (l *levelEngine) Batch(fn func(PutCommitter) error) error {
 	batch := &leveldb.Batch{}
 
 	if err := fn(struct {
 		PutFunc
 		DeleteFunc
+		CommitFunc
 	}{
 		func(key, val []byte) error {
 			batch.Put(key, val)
@@ -76,9 +77,15 @@ func (l *levelEngine) Batch(fn func(Putter) error) error {
 			batch.Delete(key)
 			return nil
 		},
+		func() error {
+			err := l.db.Write(batch, &writeOpt)
+			batch.Reset()
+			return err
+		},
 	}); err != nil {
 		return err
 	}
+
 	return l.db.Write(batch, &writeOpt)
 }
 

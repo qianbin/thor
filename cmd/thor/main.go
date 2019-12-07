@@ -182,7 +182,7 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 				iroot1 = thor.Bytes32{}
 			}
 
-			inodes, ientries, err := pruner.Perm("i", iroot1, iroot2, nil)
+			inodes, ientries, err := pruner.SaveDiff("i", iroot1, iroot2, nil)
 			if err != nil {
 
 				panic(err)
@@ -198,7 +198,7 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 			}
 
 			var sNodes, sEntries int
-			accNodes, accEntries, err := pruner.Perm("a", stateRoot1, stateRoot2, func(key, blob1, blob2 []byte) error {
+			accNodes, accEntries, err := pruner.SaveDiff("a", stateRoot1, stateRoot2, func(key, blob1, blob2 []byte) error {
 				var sroot1, sroot2 thor.Bytes32
 				if len(blob1) > 0 {
 					var acc state.Account
@@ -215,7 +215,7 @@ func prune(db *muxdb.MuxDB, chain *chain.Chain) error {
 					sroot2 = thor.BytesToBytes32(acc.StorageRoot)
 				}
 				if sroot1 != sroot2 {
-					n, e, err := pruner.Perm("s"+string(key), sroot1, sroot2, nil)
+					n, e, err := pruner.SaveDiff("s"+string(key), sroot1, sroot2, nil)
 					if err != nil {
 						return err
 					}

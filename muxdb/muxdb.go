@@ -55,10 +55,9 @@ func Open(path string, options *Options) (*MuxDB, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	return &MuxDB{
 		engine:    kv.NewLevelEngine(ldb),
-		trieCache: newTrieCache(0, decTrieNodeCacheCount),
+		trieCache: newTrieCache(options.TrieCacheSizeMB, decTrieNodeCacheCount),
 	}, nil
 }
 
@@ -118,9 +117,15 @@ func (m *MuxDB) NewStore(name string) kv.Store {
 				return fn(bkt.ProxyGetter(getter))
 			})
 		},
-		func(fn func(kv.Putter) error) error {
-			return m.engine.Batch(func(putter kv.Putter) error {
-				return fn(bkt.ProxyPutter(putter))
+		func(fn func(kv.PutCommitter) error) error {
+			return m.engine.Batch(func(putter kv.PutCommitter) error {
+				return fn(struct {
+					kv.Putter
+					kv.CommitFunc
+				}{
+					bkt.ProxyPutter(putter),
+					putter.Commit,
+				})
 			})
 		},
 		func(r kv.Range, fn func(kv.Pair) bool) error {

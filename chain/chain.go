@@ -272,7 +272,7 @@ func (c *Chain) saveBlockAndReceipts(
 		txs       = block.Transactions()
 		extHeader = &extHeader{header, indexRoot}
 	)
-	if err := c.blockStore.Batch(func(putter kv.Putter) error {
+	if err := c.blockStore.Batch(func(putter kv.PutCommitter) error {
 
 		if err := saveTransactions(putter, header.ID(), txs); err != nil {
 			return err
@@ -296,7 +296,7 @@ func (c *Chain) saveBlockAndReceipts(
 	return nil
 }
 
-// Block expanded block.Block to indicate whether it is obsolete
+// Block extend block.Block with the obsolete flag.
 type Block struct {
 	*block.Block
 	Obsolete bool

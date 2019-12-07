@@ -84,9 +84,6 @@ func newManagedTrie(
 		},
 		// GetDecoded
 		func(key *trie.NodeKey) (interface{}, func(interface{})) {
-			if len(key.Path) > 3 {
-				return nil, nil
-			}
 			if cached := cache.GetDecoded(key.Hash, key.Scaning); cached != nil {
 				return cached, nil
 			}
@@ -133,7 +130,7 @@ func (t *managedTrie) Commit() (thor.Bytes32, error) {
 		commitSpace = t.commitSpace()
 	)
 
-	err = t.engine.Batch(func(putter kv.Putter) error {
+	err = t.engine.Batch(func(putter kv.PutCommitter) error {
 		if t.secureKeys != nil {
 			dbKey := [1 + 32]byte{trieSecureKeySpace}
 			for h, p := range t.secureKeys {

@@ -2,36 +2,29 @@ package muxdb
 
 import (
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/coocood/freecache"
 	lru "github.com/hashicorp/golang-lru"
 )
 
+const trieEncCacheSlice = 8
+
 type trieCache struct {
-	enc [8]*freecache.Cache
-	dec *lru.Cache
+	enc [trieEncCacheSlice]*freecache.Cache // for encoded nodes
+	dec *lru.Cache                          // for decoded nodes
 }
 
 func newTrieCache(encSizeMB int, decCount int) *trieCache {
-	c := &trieCache{}
+	var cache trieCache
 	if encSizeMB > 0 {
-		const factor = 1.5
-		var sum float64
-		for i := 0; i < len(c.enc); i++ {
-			sum += math.Pow(factor, float64(i))
+		for i := 0; i < trieEncCacheSlice; i++ {
+			cache.enc[i] = freecache.NewCache(encSizeMB * 1024 * 1024 / trieEncCacheSlice)
 		}
-
-		for i := 0; i < len(c.enc); i++ {
-			size := float64(encSizeMB*1024*1024) * math.Pow(factor, float64(i)) / sum
-			c.enc[i] = freecache.NewCache(int(size))
-		}
-
 		go func() {
 			for {
 				time.Sleep(time.Minute)
-				for i, e := range c.enc {
+				for i, e := range cache.enc {
 					fmt.Println(i, "[", e.EntryCount(), e.HitCount(), e.MissCount(), e.EvacuateCount(), e.HitRate(), "]")
 				}
 			}
@@ -39,64 +32,41 @@ func newTrieCache(encSizeMB int, decCount int) *trieCache {
 	}
 
 	if decCount > 0 {
-		c.dec, _ = lru.New(decCount)
+		cache.dec, _ = lru.New(decCount)
 	}
-
-	return c
+	return &cache
 }
 
-func (c *trieCache) GetEncoded(key []byte, pathLen int, peek bool) []byte {
-	i := pathLen
-
-	if l := len(c.enc) - 1; i > l {
-		i = l
-	}
-
-	e := c.enc[i]
-
-	if e == nil {
+func (c *trieCache) GetEncoded(key []byte, pathLen int, peek bool) (val []byte) {
+	enc := c.enc[pathLen%trieEncCacheSlice]
+	if enc == nil {
 		return nil
 	}
 
 	if peek {
-		val, err := e.Peek(key)
-		if err != nil {
-			return nil
-		}
-		return val
-	}
-	val, err := e.Get(key)
-	if err != nil {
-		return nil
+		val, _ = enc.Peek(key)
+	} else {
+		val, _ = enc.Get(key)
 	}
 	return val
 }
 func (c *trieCache) SetEncoded(key, val []byte, pathLen int) {
-	i := pathLen
-
-	if l := len(c.enc) - 1; i > l {
-		i = l
-	}
-
-	e := c.enc[i]
-
-	if e == nil {
+	enc := c.enc[pathLen%trieEncCacheSlice]
+	if enc == nil {
 		return
 	}
-	e.Set(key, val, 8*3600)
+	enc.Set(key, val, 8*3600)
 }
 
-func (c *trieCache) GetDecoded(key []byte, peek bool) interface{} {
+func (c *trieCache) GetDecoded(key []byte, peek bool) (val interface{}) {
 	if c.dec == nil {
 		return nil
 	}
-
 	if peek {
-		val, _ := c.dec.Peek(string(key))
-		return val
+		val, _ = c.dec.Peek(string(key))
+	} else {
+		val, _ = c.dec.Get(string(key))
 	}
-
-	val, _ := c.dec.Get(string(key))
 	return val
 }
 

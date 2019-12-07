@@ -18,16 +18,6 @@ var (
 	receiptsSuffix = byte('r')
 )
 
-// TxMeta contains information about a tx is settled.
-type TxMeta struct {
-	BlockID thor.Bytes32
-
-	// Index the position of the tx in block's txs.
-	Index uint64 // rlp require uint64.
-
-	Reverted bool
-}
-
 func saveRLP(w kv.Putter, key []byte, val interface{}) error {
 	data, err := rlp.EncodeToBytes(val)
 	if err != nil {

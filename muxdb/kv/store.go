@@ -12,6 +12,12 @@ type Putter interface {
 	Delete(key []byte) error
 }
 
+// PutCommitter defines putter with commit method.
+type PutCommitter interface {
+	Putter
+	Commit() error
+}
+
 // Pair defines key-value pair.
 type Pair interface {
 	Key() []byte
@@ -30,7 +36,7 @@ type Store interface {
 	Putter
 
 	Snapshot(fn func(Getter) error) error
-	Batch(fn func(Putter) error) error
+	Batch(fn func(PutCommitter) error) error
 	Iterate(r Range, fn func(Pair) bool) error
 	IsNotFound(err error) bool
 }

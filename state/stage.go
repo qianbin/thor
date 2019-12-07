@@ -90,7 +90,7 @@ func (s *Stage) Commit() (thor.Bytes32, error) {
 	}
 
 	// write codes
-	if err := s.codeStore.Batch(func(w kv.Putter) error {
+	if err := s.codeStore.Batch(func(w kv.PutCommitter) error {
 		for _, code := range s.codes {
 			if err := w.Put(code.hash, code.code); err != nil {
 				return err
