@@ -65,7 +65,7 @@ make all
 
 If no error reported, all built executable binaries will appear in folder *bin*.
 
-## Running Thor
+## Running Thorjkjk
 
 Connect to VeChain's mainnet:
 
