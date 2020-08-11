@@ -6,6 +6,7 @@
 package consensus
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/rlp"
@@ -261,8 +262,9 @@ func (c *Consensus) validateBlockBody(blk *block.Block, parent *block.Header, ca
 				return false
 			}
 
+			prev := make([]byte, 32)
 			alpha := header.Proposal().Alpha(leader)
-			for _, bs := range bss {
+			for i, bs := range bss {
 				backer, err := bs.Signer()
 				if err != nil {
 					return consensusError(fmt.Sprintf("backer signature's signer unavailable: %v", err))
@@ -280,6 +282,10 @@ func (c *Consensus) validateBlockBody(blk *block.Block, parent *block.Header, ca
 				if err != nil {
 					return consensusError(fmt.Sprintf("failed to verify backer's signature: %v", err))
 				}
+				if i != 0 && bytes.Compare(prev, beta) > 0 {
+					return consensusError("backer signatures are not in ascending order(by beta)")
+				}
+				copy(prev, beta)
 
 				isLucky := poa.EvaluateVRF(beta)
 				if isLucky == false {
