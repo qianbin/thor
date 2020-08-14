@@ -270,12 +270,7 @@ func (n *Node) processBlock(blk *block.Block, stats *blockStats) (bool, error) {
 		return false, err
 	}
 
-	if _, err := stage.Commit(); err != nil {
-		log.Error("failed to commit state", "err", err)
-		return false, err
-	}
-
-	prevTrunk, curTrunk, err := n.commitBlock(blk, receipts)
+	prevTrunk, curTrunk, err := n.commitBlock(stage, blk, receipts)
 	if err != nil {
 		log.Error("failed to commit block", "err", err)
 		return false, err
@@ -291,39 +286,62 @@ func (n *Node) processBlock(blk *block.Block, stats *blockStats) (bool, error) {
 	return prevTrunk.HeadID() != curTrunk.HeadID(), nil
 }
 
-func (n *Node) commitBlock(newBlock *block.Block, receipts tx.Receipts) (*chain.Chain, *chain.Chain, error) {
+func (n *Node) commitBlock(stage *state.Stage, newBlock *block.Block, receipts tx.Receipts) (prevTrunk *chain.Chain, curTrunk *chain.Chain, err error) {
 	n.commitLock.Lock()
 	defer n.commitLock.Unlock()
 
-	best := n.repo.BestBlock()
-	err := n.repo.AddBlock(newBlock, receipts)
-	if err != nil {
-		return nil, nil, err
+	var (
+		stateDone     = make(chan error)
+		prevBest      = n.repo.BestBlock()
+		becomeNewBest = false
+	)
+
+	go func() {
+		if _, err := stage.Commit(); err != nil {
+			stateDone <- errors.Wrap(err, "commit state")
+		} else {
+			stateDone <- nil
+		}
+	}()
+
+	defer func() {
+		stateErr := <-stateDone
+		if err == nil {
+			err = stateErr
+		}
+		if err == nil && becomeNewBest {
+			err = n.repo.SetBestBlockID(newBlock.Header().ID())
+		}
+	}()
+
+	if err = n.repo.AddBlock(newBlock, receipts); err != nil {
+		return
 	}
-	if newBlock.Header().BetterThan(best.Header()) {
-		if err := n.repo.SetBestBlockID(newBlock.Header().ID()); err != nil {
+
+	becomeNewBest = newBlock.Header().BetterThan(prevBest.Header())
+
+	prevTrunk = n.repo.NewChain(prevBest.Header().ID())
+	curTrunk = prevTrunk
+	if becomeNewBest {
+		curTrunk = n.repo.NewChain(newBlock.Header().ID())
+
+		diff, err := curTrunk.Exclude(prevTrunk)
+		if err != nil {
 			return nil, nil, err
 		}
-	}
-	prevTrunk := n.repo.NewChain(best.Header().ID())
-	curTrunk := n.repo.NewBestChain()
 
-	diff, err := curTrunk.Exclude(prevTrunk)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if !n.skipLogs {
-		if n.logDBFailed {
-			log.Warn("!!!log db skipped due to write failure (restart required to recover)")
-		} else {
-			if err := n.writeLogs(diff); err != nil {
-				n.logDBFailed = true
-				return nil, nil, errors.Wrap(err, "write logs")
+		if !n.skipLogs {
+			if n.logDBFailed {
+				log.Warn("!!!log db skipped due to write failure (restart required to recover)")
+			} else {
+				if err := n.writeLogs(diff); err != nil {
+					n.logDBFailed = true
+					return nil, nil, errors.Wrap(err, "write logs")
+				}
 			}
 		}
 	}
-	return prevTrunk, curTrunk, nil
+	return
 }
 
 func (n *Node) writeLogs(diff []thor.Bytes32) error {
