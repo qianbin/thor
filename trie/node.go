@@ -17,6 +17,7 @@
 package trie
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"strings"
@@ -30,6 +31,8 @@ var indices = []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b
 type node interface {
 	fstring(string) string
 	cache() (hashNode, bool)
+	encodedSize() uint64
+	encode(io.Writer) error
 }
 
 type (
@@ -46,10 +49,171 @@ type (
 	valueNode []byte
 )
 
+func intsize(i uint64) (size int) {
+	for size = 1; ; size++ {
+		if i >>= 8; i == 0 {
+			return size
+		}
+	}
+}
+
+type slice []byte
+
+func (s slice) encodedSize() uint64 {
+	if l := len(s); l == 0 || (l == 1 && s[0] <= 0x7f) {
+		return 1
+	} else if l <= 55 {
+		return uint64(l + 1)
+	} else {
+		return uint64(l + 1 + intsize(uint64(l)))
+	}
+}
+
+func (s slice) encode(w io.Writer) error {
+	var buf [8]byte
+	l := len(s)
+	if l == 0 {
+		buf[0] = 0x80
+		_, err := w.Write(buf[0:1])
+		return err
+	}
+	if l == 1 && s[0] <= 0x7f {
+		_, err := w.Write(s)
+		return err
+	}
+
+	if l <= 55 {
+		buf[0] = byte(0x80 + l)
+		if _, err := w.Write(buf[:1]); err != nil {
+			return err
+		}
+		if _, err := w.Write(s); err != nil {
+			return err
+		}
+		return nil
+	}
+	binary.BigEndian.PutUint64(buf[:], uint64(l))
+	x := intsize(uint64(l))
+	prefix := buf[8-x-1:]
+	prefix[0] = byte(0xb7 + x)
+	if _, err := w.Write((prefix)); err != nil {
+		return err
+	}
+	_, err := w.Write(s)
+	return err
+}
+
+func (n *fullNode) encodedSize() uint64 {
+	var size uint64
+	for _, c := range n.Children {
+		size += c.encodedSize()
+	}
+	if size <= 55 {
+		return size + 1
+	}
+	return size + 1 + uint64(intsize(size))
+}
+
+func (n *fullNode) encode(w io.Writer) error {
+	var size uint64
+	for _, c := range n.Children {
+		size += c.encodedSize()
+	}
+	var buf [8]byte
+	if size <= 55 {
+		buf[0] = byte(0xc0 + size)
+		if _, err := w.Write(buf[:1]); err != nil {
+			return err
+		}
+	} else {
+		binary.BigEndian.PutUint64(buf[:], size)
+		x := intsize(size)
+		prefix := buf[8-x-1:]
+		prefix[0] = byte(0xf7 + x)
+		if _, err := w.Write(prefix); err != nil {
+			return err
+		}
+	}
+	for _, c := range n.Children {
+		if err := c.encode(w); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // EncodeRLP encodes a full node into the consensus RLP format.
 func (n *fullNode) EncodeRLP(w io.Writer) error {
-	return rlp.Encode(w, n.Children)
+	return n.encode(w)
 }
+
+func (n *shortNode) EncodeRLP(w io.Writer) error {
+	return n.encode(w)
+}
+
+func (n *shortNode) encodedSize() uint64 {
+	var size uint64
+	size += slice(n.Key).encodedSize()
+	size += n.Val.encodedSize()
+
+	if size <= 55 {
+		return size + 1
+	}
+	return size + 1 + uint64(intsize(size))
+}
+
+func (n *shortNode) encode(w io.Writer) error {
+	var size uint64
+	size += slice(n.Key).encodedSize()
+	size += n.Val.encodedSize()
+
+	var buf [8]byte
+	if size <= 55 {
+		buf[0] = byte(0xc0 + size)
+		if _, err := w.Write(buf[:1]); err != nil {
+			return err
+		}
+	} else {
+		binary.BigEndian.PutUint64(buf[:], size)
+		x := intsize(size)
+		prefix := buf[8-x-1:]
+		prefix[0] = byte(0xf7 + x)
+		if _, err := w.Write(prefix); err != nil {
+			return err
+		}
+	}
+
+	if err := slice(n.Key).encode(w); err != nil {
+		return err
+	}
+	return n.Val.encode(w)
+}
+
+func (n hashNode) encodedSize() uint64 {
+	return slice(n).encodedSize()
+}
+
+func (n hashNode) encode(w io.Writer) error {
+	return slice(n).encode(w)
+}
+
+func (n hashNode) EncodeRLP(w io.Writer) error {
+	return slice(n).encode(w)
+}
+
+func (n valueNode) encodedSize() uint64 {
+	return slice(n).encodedSize()
+}
+
+func (n valueNode) encode(w io.Writer) error {
+	return slice(n).encode(w)
+}
+
+func (n valueNode) EncodeRLP(w io.Writer) error {
+	return slice(n).encode(w)
+}
+
+// valueNode []byte
 
 func (n *fullNode) copy() *fullNode   { copy := *n; return &copy }
 func (n *shortNode) copy() *shortNode { copy := *n; return &copy }
