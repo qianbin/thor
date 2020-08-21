@@ -24,83 +24,63 @@ func (c *Communicator) sync(peer *Peer, headNum uint32, handler HandleBlockStrea
 	return c.download(peer, ancestor+1, handler)
 }
 
-func (c *Communicator) download(peer *Peer, fromNum uint32, handler HandleBlockStream) error {
-
-	// it's important to set cap to 2
-	errCh := make(chan error, 2)
+func (c *Communicator) download(peer *Peer, fromNum uint32, handler HandleBlockStream) (err error) {
 
 	ctx, cancel := context.WithCancel(c.ctx)
-	blockCh := make(chan *block.Block, 2048)
+	stream := make(chan *block.Block, 2048)
 
-	var goes co.Goes
-	goes.Go(func() {
-		defer cancel()
-		if err := handler(ctx, blockCh); err != nil {
-			errCh <- err
-		}
-	})
-	goes.Go(func() {
-		defer close(blockCh)
-		var blocks []*block.Block
+	// fetch blocks from peer
+	fetchDone := co.Parallel(func(q chan<- func()) interface{} {
+		defer close(stream)
 		for {
 			result, err := proto.GetBlocksFromNumber(ctx, peer, fromNum)
 			if err != nil {
-				errCh <- err
-				return
+				return err
 			}
 			if len(result) == 0 {
-				return
+				return nil
 			}
 
-			blocks = blocks[:0]
 			for _, raw := range result {
 				var blk block.Block
 				if err := rlp.DecodeBytes(raw, &blk); err != nil {
-					errCh <- errors.Wrap(err, "invalid block")
-					return
+					return errors.Wrap(err, "invalid block")
 				}
 				if blk.Header().Number() != fromNum {
-					errCh <- errors.New("broken sequence")
-					return
+					return errors.New("broken sequence")
 				}
 				fromNum++
-				blocks = append(blocks, &blk)
-			}
-
-			<-co.Parallel(func(queue chan<- func()) {
-				for _, blk := range blocks {
-					h := blk.Header()
-					queue <- func() { h.ID() }
-					for _, tx := range blk.Transactions() {
-						tx := tx
-						queue <- func() {
-							tx.ID()
-							tx.UnprovedWork()
-							_, _ = tx.IntrinsicGas()
-							_, _ = tx.Delegator()
-						}
+				// <<< warm up
+				q <- func() {
+					peer.MarkBlock(blk.Header().ID())
+				}
+				for _, tx := range blk.Transactions() {
+					tx := tx
+					q <- func() {
+						tx.ID()
+						tx.UnprovedWork()
+						_, _ = tx.IntrinsicGas()
+						_, _ = tx.Delegator()
 					}
 				}
-			})
-
-			for _, blk := range blocks {
-				peer.MarkBlock(blk.Header().ID())
+				// >>>
 				select {
 				case <-ctx.Done():
-					return
-				case blockCh <- blk:
+					return nil
+				case stream <- &blk:
 				}
 			}
 		}
 	})
-	goes.Wait()
 
-	select {
-	case err := <-errCh:
-		return err
-	default:
-		return nil
-	}
+	defer func() {
+		cancel()
+		if r := <-fetchDone; r != nil && err == nil {
+			err = r.(error)
+		}
+	}()
+
+	return handler(c.ctx, stream)
 }
 
 func (c *Communicator) findCommonAncestor(peer *Peer, headNum uint32) (uint32, error) {

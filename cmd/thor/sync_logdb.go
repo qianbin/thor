@@ -22,71 +22,108 @@ import (
 )
 
 func syncLogDB(ctx context.Context, repo *chain.Repository, logDB *logdb.LogDB, verify bool) error {
-	startPos, err := seekLogDBSyncPosition(repo, logDB)
-	if err != nil {
-		return errors.Wrap(err, "seek log db sync position")
-	}
-	if verify && startPos > 0 {
-		if err := verifyLogDB(ctx, startPos-1, repo, logDB); err != nil {
-			return errors.Wrap(err, "verify log db")
-		}
-	}
+	// startPos, err := seekLogDBSyncPosition(repo, logDB)
+	// if err != nil {
+	// 	return errors.Wrap(err, "seek log db sync position")
+	// }
+	// if verify && startPos > 0 {
+	// 	if err := verifyLogDB(ctx, startPos-1, repo, logDB); err != nil {
+	// 		return errors.Wrap(err, "verify log db")
+	// 	}
+	// }
 
-	bestNum := repo.BestBlock().Header().Number()
+	// bestNum := repo.BestBlock().Header().Number()
+	// bestNum = 1000000
+	// if bestNum == startPos {
+	// 	return nil
+	// }
 
-	if bestNum == startPos {
-		return nil
-	}
+	// if startPos == 0 {
+	// 	fmt.Println(">> Rebuilding log db <<")
+	// 	startPos = 1 // block 0 can be skipped
+	// } else {
+	// 	fmt.Println(">> Syncing log db <<")
+	// }
 
-	if startPos == 0 {
-		fmt.Println(">> Rebuilding log db <<")
-		startPos = 1 // block 0 can be skipped
-	} else {
-		fmt.Println(">> Syncing log db <<")
-	}
+	// pb := pb.New64(int64(bestNum)).
+	// 	Set64(int64(startPos - 1)).
+	// 	SetMaxWidth(90).
+	// 	Start()
 
-	pb := pb.New64(int64(bestNum)).
-		Set64(int64(startPos - 1)).
-		SetMaxWidth(90).
-		Start()
+	// defer func() { pb.NotPrint = true }()
 
-	defer func() { pb.NotPrint = true }()
-	bestChain := repo.NewBestChain()
+	// type blockAndReceipts struct {
+	// 	b *block.Block
+	// 	r tx.Receipts
+	// }
 
-	if err := logDB.Log(func(w *logdb.Writer) error {
-		for i := startPos; i <= bestNum; i++ {
+	// var sharedErr atomic.Value
 
-			b, err := bestChain.GetBlock(i)
-			if err != nil {
-				return err
-			}
-			receipts, err := repo.GetBlockReceipts(b.Header().ID())
-			if err != nil {
-				return errors.Wrap(err, "get block receipts")
-			}
-			if err := w.Write(b, receipts); err != nil {
-				return err
-			}
-			if w.Len() > 2048 {
-				if err := w.Flush(); err != nil {
-					return err
-				}
-			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-			pb.Add64(1)
-		}
-		return nil
-	}); err != nil {
-		if err == context.Canceled {
-			return err
-		}
-		return errors.Wrap(err, "write logs")
-	}
-	pb.Finish()
+	// pipe := make(chan *blockAndReceipts, 256)
+
+	// done := co.Parallel(func(taskCh chan<- func()) {
+	// 	err := func() error {
+	// 		bestChain := repo.NewBestChain()
+	// 		for i := startPos; i <= bestNum && sharedErr.Load() == nil; i++ {
+	// 			b, err := bestChain.GetBlock(i)
+	// 			if err != nil {
+	// 				return err
+	// 			}
+	// 			taskCh <- func() {
+	// 				b.Header().ID()
+	// 			}
+	// 			for _, tx := range b.Transactions() {
+	// 				tx := tx
+	// 				taskCh <- func() { tx.ID() }
+	// 			}
+	// 			r, err := repo.GetBlockReceipts(b.Header().ID())
+	// 			if err != nil {
+	// 				return errors.Wrap(err, "get block receipts")
+	// 			}
+	// 			pipe <- &blockAndReceipts{b, r}
+	// 		}
+	// 		close(pipe)
+	// 		return nil
+	// 	}()
+	// 	if err != nil {
+	// 		sharedErr.Store(err)
+	// 	}
+	// })
+	// defer func() { <-done }()
+
+	// if err := logDB.Log(func(w *logdb.Writer) error {
+	// 	for sharedErr.Load() == nil {
+	// 		select {
+	// 		case br := <-pipe:
+	// 			if br == nil {
+	// 				return nil
+	// 			}
+	// 			if err := w.Write(br.b, br.r); err != nil {
+	// 				return err
+	// 			}
+	// 			if w.Len() > 2048 {
+	// 				if err := w.Flush(); err != nil {
+	// 					return err
+	// 				}
+	// 			}
+	// 			pb.Add64(1)
+	// 		case <-ctx.Done():
+	// 			return ctx.Err()
+	// 		}
+	// 	}
+	// 	return nil
+	// }); err != nil {
+	// 	sharedErr.Store(err)
+	// 	if err == context.Canceled {
+	// 		return err
+	// 	}
+	// 	return errors.Wrap(err, "write logs")
+	// }
+
+	// if err := sharedErr.Load(); err != nil {
+	// 	return err.(error)
+	// }
+	// pb.Finish()
 	return nil
 }
 
