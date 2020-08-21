@@ -29,48 +29,52 @@ func (c *Communicator) download(peer *Peer, fromNum uint32, handler HandleBlockS
 	ctx, cancel := context.WithCancel(c.ctx)
 	stream := make(chan *block.Block, 2048)
 
+	fetchDone := make(chan error)
 	// fetch blocks from peer
-	fetchDone := co.Parallel(func(q chan<- func()) interface{} {
-		defer close(stream)
-		for {
-			result, err := proto.GetBlocksFromNumber(ctx, peer, fromNum)
-			if err != nil {
-				return err
-			}
-			if len(result) == 0 {
-				return nil
-			}
 
-			for _, raw := range result {
-				var blk block.Block
-				if err := rlp.DecodeBytes(raw, &blk); err != nil {
-					return errors.Wrap(err, "invalid block")
+	go co.Parallel(func(q chan<- func()) {
+		fetchDone <- func() error {
+			defer close(stream)
+			for {
+				result, err := proto.GetBlocksFromNumber(ctx, peer, fromNum)
+				if err != nil {
+					return err
 				}
-				if blk.Header().Number() != fromNum {
-					return errors.New("broken sequence")
+				if len(result) == 0 {
+					return nil
 				}
-				fromNum++
-				// <<< warm up
-				q <- func() {
-					peer.MarkBlock(blk.Header().ID())
-				}
-				for _, tx := range blk.Transactions() {
-					tx := tx
+
+				for _, raw := range result {
+					var blk block.Block
+					if err := rlp.DecodeBytes(raw, &blk); err != nil {
+						return errors.Wrap(err, "invalid block")
+					}
+					if blk.Header().Number() != fromNum {
+						return errors.New("broken sequence")
+					}
+					fromNum++
+					// <<< warm up
 					q <- func() {
-						tx.ID()
-						tx.UnprovedWork()
-						_, _ = tx.IntrinsicGas()
-						_, _ = tx.Delegator()
+						peer.MarkBlock(blk.Header().ID())
+					}
+					for _, tx := range blk.Transactions() {
+						tx := tx
+						q <- func() {
+							tx.ID()
+							tx.UnprovedWork()
+							_, _ = tx.IntrinsicGas()
+							_, _ = tx.Delegator()
+						}
+					}
+					// >>>
+					select {
+					case <-ctx.Done():
+						return nil
+					case stream <- &blk:
 					}
 				}
-				// >>>
-				select {
-				case <-ctx.Done():
-					return nil
-				case stream <- &blk:
-				}
 			}
-		}
+		}()
 	})
 
 	defer func() {

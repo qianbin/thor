@@ -7,32 +7,28 @@ package co
 
 import (
 	"runtime"
-	"sync/atomic"
 )
 
 var numCPU = runtime.NumCPU()
 
 // Parallel assigns to run a batch of tasks using as many CPU as it can.
-func Parallel(f func(q chan<- func()) interface{}) <-chan interface{} {
-	taskQueue := make(chan func(), numCPU*16)
-	done := make(chan interface{}, 1)
+func Parallel(f func(q chan<- func())) {
+	var (
+		taskQueue = make(chan func(), numCPU*16)
+		goes      Goes
+	)
 
-	go func() {
-		done <- f(taskQueue)
+	defer func() {
 		close(taskQueue)
+		goes.Wait()
 	}()
 
-	nGo := int32(numCPU)
 	for i := 0; i < numCPU; i++ {
-		go func() {
+		goes.Go(func() {
 			for task := range taskQueue {
 				task()
 			}
-
-			if atomic.AddInt32(&nGo, -1) == 0 {
-				close(done)
-			}
-		}()
+		})
 	}
-	return done
+	f(taskQueue)
 }
