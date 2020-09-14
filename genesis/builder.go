@@ -112,7 +112,7 @@ func (b *Builder) Build(stater *state.Stater) (blk *block.Block, events tx.Event
 	if err != nil {
 		return nil, nil, nil, errors.Wrap(err, "stage")
 	}
-	stateRoot, err := stage.Commit()
+	stateRoot, err := stage.Commit(0)
 	if err != nil {
 		return nil, nil, nil, errors.Wrap(err, "commit state")
 	}

@@ -17,6 +17,7 @@
 package trie
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"strings"
@@ -49,6 +50,27 @@ type (
 // EncodeRLP encodes a full node into the consensus RLP format.
 func (n *fullNode) EncodeRLP(w io.Writer) error {
 	return rlp.Encode(w, n.Children)
+}
+
+func (n hashNode) EncodeRLP(w io.Writer) error {
+	if len(n) == 36 {
+		return rlp.Encode(w, []byte(n[4:]))
+	}
+	return rlp.Encode(w, []byte(n))
+}
+
+func (n hashNode) Revision() uint32 {
+	if len(n) == 36 {
+		return binary.BigEndian.Uint32(n[:4])
+	}
+	return 0
+}
+
+func (n hashNode) Hash() []byte {
+	if len(n) == 36 {
+		return n[4:]
+	}
+	return n
 }
 
 func (n *fullNode) copy() *fullNode   { copy := *n; return &copy }
@@ -182,7 +204,7 @@ func decodeRef(buf []byte) (node, []byte, error) {
 	case kind == rlp.String && len(val) == 0:
 		// empty node
 		return nil, rest, nil
-	case kind == rlp.String && len(val) == 32:
+	case kind == rlp.String && (len(val) == 32 || len(val) == 36):
 		return append(hashNode{}, val...), rest, nil
 	default:
 		return nil, nil, fmt.Errorf("invalid RLP string size %d (want 0 or 32)", len(val))

@@ -36,6 +36,138 @@ import (
 	"github.com/vechain/thor/thor"
 )
 
+type ExDb struct {
+	Database
+}
+
+func (d *ExDb) GetEncoded(key *NodeKey) ([]byte, error) {
+	var k [36]byte
+	binary.BigEndian.PutUint32(k[:], key.Revision)
+	copy(k[4:], key.Hash)
+	return d.Get(k[:])
+}
+
+func (d *ExDb) GetDecoded(key *NodeKey) (dec interface{}, cacheDec func(interface{})) {
+	return nil, nil
+}
+
+func (d *ExDb) PutEncoded(key *NodeKey, enc []byte) error {
+	var k [36]byte
+	binary.BigEndian.PutUint32(k[:], key.Revision)
+	copy(k[4:], key.Hash)
+	return d.Put(k[:], enc)
+}
+
+func TestVersioned(t *testing.T) {
+	db := ethdb.NewMemDatabase()
+	ex := &ExDb{db}
+
+	n := uint32(1000)
+	tr, _ := New(thor.Bytes32{}, ex)
+	var root thor.Bytes32
+	for i := uint32(0); i < n; i++ {
+		var k [4]byte
+		binary.BigEndian.PutUint32(k[:], i)
+		if i+1 == n {
+			fmt.Println(1)
+		}
+		if err := tr.TryUpdate(k[:], thor.Blake2b(k[:]).Bytes()); err != nil {
+			t.Fatalf("%v, err %v", i, err)
+		}
+
+		root, _ = tr.CommitRevTo(ex, i)
+	}
+
+	for i := uint32(0); i < n; i++ {
+		var k [4]byte
+		binary.BigEndian.PutUint32(k[:], i)
+		if i+1 == n {
+			fmt.Println(1)
+		}
+		val := thor.Blake2b(thor.Blake2b(k[:]).Bytes()).Bytes()
+		if err := tr.TryUpdate(k[:], val); err != nil {
+			t.Fatalf("%v, err %v", i, err)
+		}
+
+		root, _ = tr.CommitRevTo(ex, i)
+	}
+
+	tr, err := New(root, ex)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	for i := uint32(0); i < n; i++ {
+		var k [4]byte
+		binary.BigEndian.PutUint32(k[:], i)
+		got, err := tr.TryGet(k[:])
+		if err != nil {
+			t.Fatalf("%v, err %v", i, err)
+		}
+		want := thor.Blake2b(thor.Blake2b(k[:]).Bytes()).Bytes()
+		if bytes.Compare(got, want) != 0 {
+			t.Fatalf("%v, got %x, want %x", i, got, want)
+		}
+	}
+	// NewVersioned(thor.Bytes32{}, 0, 1, )
+
+}
+
+func TestVersioned3(t *testing.T) {
+	db := ethdb.NewMemDatabase()
+	ex := &ExDb{db}
+
+	tr, _ := New(thor.Bytes32{}, ex)
+
+	tr.Update([]byte{1, 2}, []byte{1, 2, 3})
+	tr.Update([]byte{1, 3}, []byte{1, 2, 3})
+	tr.Update([]byte{1}, bytes.Repeat([]byte{1}, 100))
+
+	root, _ := tr.CommitRev(1)
+
+	tr, _ = New(root, ex)
+	fmt.Println(tr.Get([]byte{1}))
+
+}
+
+func TestVersioned2(t *testing.T) {
+	db := ethdb.NewMemDatabase()
+	ex := &ExDb{db}
+
+	n := uint32(1000)
+	tr, _ := New(thor.Bytes32{}, ex)
+	var root thor.Bytes32
+	for i := uint32(0); i < n; i++ {
+		var v [4]byte
+		binary.BigEndian.PutUint32(v[:], i)
+		var k = thor.Blake2b(v[:])
+
+		if err := tr.TryUpdate(k[:], v[:]); err != nil {
+			t.Fatalf("%v, err %v", i, err)
+		}
+
+		root, _ = tr.CommitRevTo(ex, i)
+	}
+
+	tr, _ = New(root, ex)
+	for i := uint32(0); i < n; i++ {
+		var v [4]byte
+		binary.BigEndian.PutUint32(v[:], i)
+		var k = thor.Blake2b(v[:])
+
+		got, err := tr.TryGet(k[:])
+		if err != nil {
+			t.Fatalf("%v, err %v", i, err)
+		}
+		want := v[:]
+		if bytes.Compare(got, want) != 0 {
+			t.Fatalf("%v, got %x, want %x", i, got, want)
+		}
+	}
+	// NewVersioned(thor.Bytes32{}, 0, 1, )
+
+}
+
 func init() {
 	spew.Config.Indent = "    "
 	spew.Config.DisableMethods = false

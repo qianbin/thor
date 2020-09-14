@@ -25,7 +25,7 @@ func (s *Stage) Hash() thor.Bytes32 {
 }
 
 // Commit commits all changes into main accounts trie and storage tries.
-func (s *Stage) Commit() (thor.Bytes32, error) {
+func (s *Stage) Commit(rev uint32) (thor.Bytes32, error) {
 	codeStore := s.db.NewStore(codeStoreName)
 
 	// write codes
@@ -42,11 +42,11 @@ func (s *Stage) Commit() (thor.Bytes32, error) {
 
 	// commit storage tries
 	for _, t := range s.storageTries {
-		if _, err := t.Commit(); err != nil {
+		if _, err := t.Commit(rev); err != nil {
 			return thor.Bytes32{}, &Error{err}
 		}
 	}
 
 	// commit accounts trie
-	return s.accountTrie.Commit()
+	return s.accountTrie.Commit(rev)
 }

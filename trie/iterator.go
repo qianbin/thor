@@ -115,6 +115,7 @@ type nodeIteratorState struct {
 	parent  thor.Bytes32 // Hash of the first full ancestor node (nil if current is the root)
 	index   int          // Child to be processed next
 	pathlen int          // Length of the path to this node
+	rev     uint64
 }
 
 type nodeIterator struct {
@@ -169,11 +170,35 @@ func (it *nodeIterator) Node() ([]byte, error) {
 	h := newHasher()
 	defer returnHasherToPool(h)
 
-	collapsed, _, err := h.hashChildren(st.node, nil, it.path)
+	collapsed, _, err := h.hashChildren(st.node, 0, nil, it.path)
 	if err != nil {
 		return nil, err
 	}
-	return rlp.EncodeToBytes(collapsed)
+
+	h.tmp.Reset()
+	switch n := collapsed.(type) {
+	case *shortNode:
+		n = n.copy()
+		if hn, ok := n.Val.(hashNode); ok {
+			n.Val = valueNode(hn)
+		}
+		h.tmp.Reset()
+		if err := rlp.Encode(&h.tmp, n); err != nil {
+			panic("encode error: " + err.Error())
+		}
+	case *fullNode:
+		n = n.copy()
+		for i, c := range n.Children {
+			if hn, ok := c.(hashNode); ok {
+				n.Children[i] = valueNode(hn)
+			}
+		}
+		h.tmp.Reset()
+		if err := rlp.Encode(&h.tmp, n); err != nil {
+			panic("encode error: " + err.Error())
+		}
+	}
+	return append([]byte(nil), h.tmp...), nil
 }
 
 func (it *nodeIterator) Parent() thor.Bytes32 {
@@ -215,8 +240,8 @@ func (it *nodeIterator) LeafProof() [][]byte {
 
 			for i, item := range it.stack[:len(it.stack)-1] {
 				// Gather nodes that end up as hash nodes (or the root)
-				node, _, _ := hasher.hashChildren(item.node, nil, nil)
-				hashed, _ := hasher.store(node, nil, nil, false)
+				node, _, _ := hasher.hashChildren(item.node, 0, nil, nil)
+				hashed, _ := hasher.store(node, 0, nil, nil, false)
 				if _, ok := hashed.(hashNode); ok || i == 0 {
 					enc, _ := rlp.EncodeToBytes(node)
 					proofs = append(proofs, enc)

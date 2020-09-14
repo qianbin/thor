@@ -55,9 +55,10 @@ type DatabaseWriter interface {
 
 // NodeKey node key along with node path.
 type NodeKey struct {
-	Hash    []byte
-	Path    []byte
-	Scaning bool // whether the key is being iterated. might be useful for cache logic.
+	Hash     []byte
+	Revision uint32
+	Path     []byte
+	Scaning  bool // whether the key is being iterated. might be useful for cache logic.
 }
 
 // DatabaseReaderEx extended reader.
@@ -430,7 +431,8 @@ func (t *Trie) resolve(n node, prefix []byte) (node, error) {
 func (t *Trie) resolveHash(n hashNode, prefix []byte, scaning bool) (node, []byte, error) {
 	if ex, ok := t.db.(DatabaseReaderEx); ok {
 		key := NodeKey{
-			n,
+			n.Hash(),
+			n.Revision(),
 			prefix,
 			scaning,
 		}
@@ -465,7 +467,7 @@ func (t *Trie) Root() []byte { return t.Hash().Bytes() }
 // Hash returns the root hash of the trie. It does not write to the
 // database and can be used even if the trie doesn't have one.
 func (t *Trie) Hash() thor.Bytes32 {
-	hash, cached, _ := t.hashRoot(nil)
+	hash, cached, _ := t.hashRoot(nil, 0)
 	t.root = cached
 	return thor.BytesToBytes32(hash.(hashNode))
 }
@@ -476,10 +478,14 @@ func (t *Trie) Hash() thor.Bytes32 {
 // Committing flushes nodes from memory.
 // Subsequent Get calls will load nodes from the database.
 func (t *Trie) Commit() (root thor.Bytes32, err error) {
+	return t.CommitRev(0)
+}
+
+func (t *Trie) CommitRev(newRev uint32) (root thor.Bytes32, err error) {
 	if t.db == nil {
 		panic("Commit called on trie with nil database")
 	}
-	return t.CommitTo(t.db)
+	return t.CommitRevTo(t.db, newRev)
 }
 
 // CommitTo writes all nodes to the given database.
@@ -490,7 +496,11 @@ func (t *Trie) Commit() (root thor.Bytes32, err error) {
 // the changes made to db are written back to the trie's attached
 // database before using the trie.
 func (t *Trie) CommitTo(db DatabaseWriter) (root thor.Bytes32, err error) {
-	hash, cached, err := t.hashRoot(db)
+	return t.CommitRevTo(db, 0)
+}
+
+func (t *Trie) CommitRevTo(db DatabaseWriter, newRev uint32) (root thor.Bytes32, err error) {
+	hash, cached, err := t.hashRoot(db, newRev)
 	if err != nil {
 		return (thor.Bytes32{}), err
 	}
@@ -498,11 +508,12 @@ func (t *Trie) CommitTo(db DatabaseWriter) (root thor.Bytes32, err error) {
 	return thor.BytesToBytes32(hash.(hashNode)), nil
 }
 
-func (t *Trie) hashRoot(db DatabaseWriter) (node, node, error) {
+func (t *Trie) hashRoot(db DatabaseWriter, newRev uint32) (node, node, error) {
 	if t.root == nil {
 		return hashNode(emptyRoot.Bytes()), nil, nil
 	}
 	h := newHasher()
 	defer returnHasherToPool(h)
-	return h.hash(t.root, db, nil, true)
+	n, c, err := h.hash(t.root, newRev, db, nil, true)
+	return n, c, err
 }

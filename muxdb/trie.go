@@ -127,17 +127,17 @@ func (t *Trie) Hash() thor.Bytes32 {
 }
 
 // Commit writes all nodes to the trie's database.
-func (t *Trie) Commit() (thor.Bytes32, error) {
-	return t.commit(t.permanent)
+func (t *Trie) Commit(rev uint32) (thor.Bytes32, error) {
+	return t.commit(t.permanent, rev)
 }
 
 // CommitPermanently writes all nodes directly into permanent space.
 // All nodes committed in this way can not be pruned. It's for test purpose only.
-func (t *Trie) CommitPermanently() (thor.Bytes32, error) {
-	return t.commit(true)
+func (t *Trie) CommitPermanently(rev uint32) (thor.Bytes32, error) {
+	return t.commit(true, rev)
 }
 
-func (t *Trie) commit(permanent bool) (root thor.Bytes32, err error) {
+func (t *Trie) commit(permanent bool, rev uint32) (root thor.Bytes32, err error) {
 	obj, err := t.lazyInit()
 	if err != nil {
 		return
@@ -149,7 +149,7 @@ func (t *Trie) commit(permanent bool) (root thor.Bytes32, err error) {
 	}
 
 	err = t.store.Batch(func(putter kv.PutFlusher) error {
-		root, err = t.doCommit(putter, obj, space)
+		root, err = t.doCommit(putter, obj, space, rev)
 		return err
 	})
 	return
@@ -197,7 +197,7 @@ func (t *Trie) hashKey(key []byte, save bool) []byte {
 
 func (t *Trie) getEncoded(key *trie.NodeKey) (enc []byte, err error) {
 	// retrieve from cache
-	enc = t.cache.GetEncoded(key.Hash, len(key.Path), key.Scaning)
+	enc = t.cache.GetEncoded(key)
 	if len(enc) > 0 {
 		return
 	}
@@ -215,23 +215,23 @@ func (t *Trie) getEncoded(key *trie.NodeKey) (enc []byte, err error) {
 	// skip caching when scaning(iterating) a trie, to prevent the cache from
 	// being over filled.
 	if !key.Scaning {
-		t.cache.SetEncoded(key.Hash, enc, len(key.Path))
+		t.cache.SetEncoded(key, enc)
 	}
 	return
 }
 
 func (t *Trie) getDecoded(key *trie.NodeKey) (interface{}, func(interface{})) {
-	if cached := t.cache.GetDecoded(key.Hash, len(key.Path), key.Scaning); cached != nil {
+	if cached := t.cache.GetDecoded(key); cached != nil {
 		return cached, nil
 	}
 	if !key.Scaning {
 		// fill cache only if not iterating
-		return nil, func(dec interface{}) { t.cache.SetDecoded(key.Hash, dec, len(key.Path)) }
+		return nil, func(dec interface{}) { t.cache.SetDecoded(key, dec) }
 	}
 	return nil, nil
 }
 
-func (t *Trie) doCommit(putter kv.Putter, trieObj *trie.Trie, space byte) (root thor.Bytes32, err error) {
+func (t *Trie) doCommit(putter kv.Putter, trieObj *trie.Trie, space byte, rev uint32) (root thor.Bytes32, err error) {
 	// save secure key preimages
 	if len(t.secureKeys) > 0 {
 		buf := [1 + 32]byte{trieSecureKeySpace}
@@ -244,17 +244,17 @@ func (t *Trie) doCommit(putter kv.Putter, trieObj *trie.Trie, space byte) (root 
 		t.secureKeys = nil
 	}
 
-	return trieObj.CommitTo(&struct {
+	return trieObj.CommitRevTo(&struct {
 		trie.DatabaseWriter
 		putEncodedFunc
 	}{
 		nil, // leave out trie.DatabaseWriter, because here provides trie.DatabaseWriterEx
 		// implements trie.DatabaseWriterEx.PutEncoded
 		func(key *trie.NodeKey, enc []byte) error {
-			t.cache.SetEncoded(key.Hash, enc, len(key.Path))
+			t.cache.SetEncoded(key, enc)
 			return t.keyBuf.Put(putter.Put, key, enc, space)
 		},
-	})
+	}, rev)
 }
 
 // errorIterator an iterator always in error state.

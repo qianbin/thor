@@ -16,6 +16,13 @@
 
 package trie
 
+import (
+	"testing"
+)
+
+func TestNode(t *testing.T) {
+}
+
 // func TestCanUnload(t *testing.T) {
 // 	tests := []struct {
 // 		flag                 nodeFlag

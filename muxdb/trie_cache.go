@@ -6,8 +6,11 @@
 package muxdb
 
 import (
+	"encoding/binary"
+
 	"github.com/coocood/freecache"
 	lru "github.com/hashicorp/golang-lru"
+	"github.com/vechain/thor/trie"
 )
 
 const (
@@ -39,53 +42,65 @@ func newTrieCache(encSizeMB int, decCapacity int) *trieCache {
 	return &cache
 }
 
-func (c *trieCache) GetEncoded(key []byte, pathLen int, peek bool) (val []byte) {
-	i := pathLen
+func (c *trieCache) GetEncoded(key *trie.NodeKey) (val []byte) {
+	i := len(key.Path)
 	if i >= trieNodeCacheSeg {
 		i = trieNodeCacheSeg - 1
 	}
 	if enc := c.enc[i]; enc != nil {
-		if peek {
-			val, _ = enc.Peek(key)
+		var buf [36]byte
+		binary.BigEndian.PutUint32(buf[:], key.Revision)
+		copy(buf[4:], key.Hash)
+		if key.Scaning {
+			val, _ = enc.Peek(buf[:])
 		} else {
-			val, _ = enc.Get(key)
+			val, _ = enc.Get(buf[:])
 		}
 	}
 	return
 }
-func (c *trieCache) SetEncoded(key, val []byte, pathLen int) {
-	i := pathLen
+func (c *trieCache) SetEncoded(key *trie.NodeKey, val []byte) {
+	i := len(key.Path)
 	if i >= trieNodeCacheSeg {
 		i = trieNodeCacheSeg - 1
 	}
 	if enc := c.enc[i]; enc != nil {
-		_ = enc.Set(key, val, 8*3600)
+		var buf [36]byte
+		binary.BigEndian.PutUint32(buf[:], key.Revision)
+		copy(buf[4:], key.Hash)
+		_ = enc.Set(buf[:], val, 8*3600)
 	}
 }
 
-func (c *trieCache) GetDecoded(key []byte, pathLen int, peek bool) (val interface{}) {
-	i := pathLen
+func (c *trieCache) GetDecoded(key *trie.NodeKey) (val interface{}) {
+	i := len(key.Path)
 	if i >= trieNodeCacheSeg {
 		i = trieNodeCacheSeg - 1
 	}
 
 	if dec := c.dec[i]; dec != nil {
-		if peek {
-			val, _ = dec.Peek(string(key))
+		var buf [36]byte
+		binary.BigEndian.PutUint32(buf[:], key.Revision)
+		copy(buf[4:], key.Hash)
+		if key.Scaning {
+			val, _ = dec.Peek(string(buf[:]))
 		} else {
-			val, _ = dec.Get(string(key))
+			val, _ = dec.Get(string(buf[:]))
 		}
 	}
 	return
 }
 
-func (c *trieCache) SetDecoded(key []byte, val interface{}, pathLen int) {
-	i := pathLen
+func (c *trieCache) SetDecoded(key *trie.NodeKey, val interface{}) {
+	i := len(key.Path)
 	if i >= trieNodeCacheSeg {
 		i = trieNodeCacheSeg - 1
 	}
 
 	if dec := c.dec[i]; dec != nil {
-		dec.Add(string(key), val)
+		var buf [36]byte
+		binary.BigEndian.PutUint32(buf[:], key.Revision)
+		copy(buf[4:], key.Hash)
+		dec.Add(string(buf[:]), val)
 	}
 }

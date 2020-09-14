@@ -320,7 +320,7 @@ func (n *Node) commitBlock(stage *state.Stage, newBlock *block.Block, receipts t
 		}()
 	}
 
-	if _, err := stage.Commit(); err != nil {
+	if _, err := stage.Commit(newBlock.Header().Number()); err != nil {
 		return nil, nil, errors.Wrap(err, "commit state")
 	}
 

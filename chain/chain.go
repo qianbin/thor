@@ -286,5 +286,5 @@ func (r *Repository) indexBlock(parentIndexRoot thor.Bytes32, block *block.Block
 			return thor.Bytes32{}, err
 		}
 	}
-	return trie.Commit()
+	return trie.Commit(block.Header().Number())
 }
