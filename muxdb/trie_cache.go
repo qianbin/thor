@@ -6,10 +6,9 @@
 package muxdb
 
 import (
-	"encoding/binary"
-
 	"github.com/coocood/freecache"
 	lru "github.com/hashicorp/golang-lru"
+	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/trie"
 )
 
@@ -42,65 +41,53 @@ func newTrieCache(encSizeMB int, decCapacity int) *trieCache {
 	return &cache
 }
 
-func (c *trieCache) GetEncoded(key *trie.NodeKey) (val []byte) {
+func (c *trieCache) GetEncoded(name string, key *trie.NodeKey) (val []byte) {
 	i := len(key.Path)
 	if i >= trieNodeCacheSeg {
 		i = trieNodeCacheSeg - 1
 	}
 	if enc := c.enc[i]; enc != nil {
-		var buf [36]byte
-		binary.BigEndian.PutUint32(buf[:], key.Revision)
-		copy(buf[4:], key.Hash)
 		if key.Scaning {
-			val, _ = enc.Peek(buf[:])
+			val, _ = enc.Peek(thor.Blake2b([]byte(name), key.Hash).Bytes())
 		} else {
-			val, _ = enc.Get(buf[:])
+			val, _ = enc.Get(thor.Blake2b([]byte(name), key.Hash).Bytes())
 		}
 	}
 	return
 }
-func (c *trieCache) SetEncoded(key *trie.NodeKey, val []byte) {
+func (c *trieCache) SetEncoded(name string, key *trie.NodeKey, val []byte) {
 	i := len(key.Path)
 	if i >= trieNodeCacheSeg {
 		i = trieNodeCacheSeg - 1
 	}
 	if enc := c.enc[i]; enc != nil {
-		var buf [36]byte
-		binary.BigEndian.PutUint32(buf[:], key.Revision)
-		copy(buf[4:], key.Hash)
-		_ = enc.Set(buf[:], val, 8*3600)
+		_ = enc.Set(thor.Blake2b([]byte(name), key.Hash).Bytes(), val, 8*3600)
 	}
 }
 
-func (c *trieCache) GetDecoded(key *trie.NodeKey) (val interface{}) {
+func (c *trieCache) GetDecoded(name string, key *trie.NodeKey) (val interface{}) {
 	i := len(key.Path)
 	if i >= trieNodeCacheSeg {
 		i = trieNodeCacheSeg - 1
 	}
 
 	if dec := c.dec[i]; dec != nil {
-		var buf [36]byte
-		binary.BigEndian.PutUint32(buf[:], key.Revision)
-		copy(buf[4:], key.Hash)
 		if key.Scaning {
-			val, _ = dec.Peek(string(buf[:]))
+			val, _ = dec.Peek(string(thor.Blake2b([]byte(name), key.Hash).Bytes()))
 		} else {
-			val, _ = dec.Get(string(buf[:]))
+			val, _ = dec.Get(string(thor.Blake2b([]byte(name), key.Hash).Bytes()))
 		}
 	}
 	return
 }
 
-func (c *trieCache) SetDecoded(key *trie.NodeKey, val interface{}) {
+func (c *trieCache) SetDecoded(name string, key *trie.NodeKey, val interface{}) {
 	i := len(key.Path)
 	if i >= trieNodeCacheSeg {
 		i = trieNodeCacheSeg - 1
 	}
 
 	if dec := c.dec[i]; dec != nil {
-		var buf [36]byte
-		binary.BigEndian.PutUint32(buf[:], key.Revision)
-		copy(buf[4:], key.Hash)
-		dec.Add(string(buf[:]), val)
+		dec.Add(string(thor.Blake2b([]byte(name), key.Hash).Bytes()), val)
 	}
 }

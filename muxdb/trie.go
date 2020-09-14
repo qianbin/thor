@@ -197,7 +197,7 @@ func (t *Trie) hashKey(key []byte, save bool) []byte {
 
 func (t *Trie) getEncoded(key *trie.NodeKey) (enc []byte, err error) {
 	// retrieve from cache
-	enc = t.cache.GetEncoded(key)
+	enc = t.cache.GetEncoded(t.name, key)
 	if len(enc) > 0 {
 		return
 	}
@@ -215,18 +215,18 @@ func (t *Trie) getEncoded(key *trie.NodeKey) (enc []byte, err error) {
 	// skip caching when scaning(iterating) a trie, to prevent the cache from
 	// being over filled.
 	if !key.Scaning {
-		t.cache.SetEncoded(key, enc)
+		t.cache.SetEncoded(t.name, key, enc)
 	}
 	return
 }
 
 func (t *Trie) getDecoded(key *trie.NodeKey) (interface{}, func(interface{})) {
-	if cached := t.cache.GetDecoded(key); cached != nil {
+	if cached := t.cache.GetDecoded(t.name, key); cached != nil {
 		return cached, nil
 	}
 	if !key.Scaning {
 		// fill cache only if not iterating
-		return nil, func(dec interface{}) { t.cache.SetDecoded(key, dec) }
+		return nil, func(dec interface{}) { t.cache.SetDecoded(t.name, key, dec) }
 	}
 	return nil, nil
 }
@@ -251,7 +251,7 @@ func (t *Trie) doCommit(putter kv.Putter, trieObj *trie.Trie, space byte, rev ui
 		nil, // leave out trie.DatabaseWriter, because here provides trie.DatabaseWriterEx
 		// implements trie.DatabaseWriterEx.PutEncoded
 		func(key *trie.NodeKey, enc []byte) error {
-			t.cache.SetEncoded(key, enc)
+			t.cache.SetEncoded(t.name, key, enc)
 			return t.keyBuf.Put(putter.Put, key, enc, space)
 		},
 	}, rev)
