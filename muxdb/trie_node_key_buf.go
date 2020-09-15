@@ -22,7 +22,7 @@ type trieNodeKeyBuf []byte
 
 func newTrieNodeKeyBuf(name string) trieNodeKeyBuf {
 	nameLen := len(name)
-	buf := make([]byte, 1+nameLen+4+32)
+	buf := make([]byte, 1+nameLen+4+8+32)
 	copy(buf[1:], name)
 	return buf
 }
@@ -31,8 +31,13 @@ func (b trieNodeKeyBuf) spaceSlot() *byte {
 	return &b[0]
 }
 
+func (b trieNodeKeyBuf) pathSlot() []byte {
+	offset := len(b) - 32 - 8
+	return b[offset : offset+8]
+}
+
 func (b trieNodeKeyBuf) revSlot() []byte {
-	offset := len(b) - 32 - 4
+	offset := len(b) - 32 - 8 - 4
 	return b[offset : offset+4]
 }
 
@@ -43,6 +48,7 @@ func (b trieNodeKeyBuf) hashSlot() []byte {
 
 // Get gets encoded trie node from kv store.
 func (b trieNodeKeyBuf) Get(get kv.GetFunc, key *trie.NodeKey) ([]byte, error) {
+	b.compactPath(key.Path)
 	binary.BigEndian.PutUint32(b.revSlot(), key.Revision)
 	copy(b.hashSlot(), key.Hash)
 
@@ -68,8 +74,35 @@ func (b trieNodeKeyBuf) Get(get kv.GetFunc, key *trie.NodeKey) ([]byte, error) {
 // Put put encoded trie node to the given space.
 func (b trieNodeKeyBuf) Put(put kv.PutFunc, key *trie.NodeKey, enc []byte, space byte) error {
 	*b.spaceSlot() = space
+	b.compactPath(key.Path)
 	binary.BigEndian.PutUint32(b.revSlot(), key.Revision)
 	copy(b.hashSlot(), key.Hash)
 
 	return put(b, enc)
+}
+func (b trieNodeKeyBuf) compactPath(path []byte) {
+	pathSlot := b.pathSlot()
+	for i := 0; i < 8; i++ {
+		pathSlot[i] = 0
+	}
+
+	pathLen := len(path)
+	if pathLen > 15 {
+		pathLen = 15
+	}
+
+	if pathLen > 0 {
+		// compact at most 15 nibbles and term with path len.
+		for i := 0; i < pathLen; i++ {
+			if i%2 == 0 {
+				pathSlot[i/2] |= (path[i] << 4)
+			} else {
+				pathSlot[i/2] |= path[i]
+			}
+		}
+		pathSlot[7] |= byte(pathLen)
+	} else {
+		// narrow the affected key range of nodes produced by trie commitment.
+		pathSlot[0] = (8 << 4)
+	}
 }
