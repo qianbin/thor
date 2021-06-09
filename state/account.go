@@ -22,6 +22,8 @@ type Account struct {
 	Master      []byte // master address
 	CodeHash    []byte // hash of code
 	StorageRoot []byte // merkle root of the storage trie
+
+	storageVer uint32
 }
 
 // IsEmpty returns if an account is empty.
@@ -63,7 +65,7 @@ func emptyAccount() *Account {
 // loadAccount load an account object by address in trie.
 // It returns empty account is no account found at the address.
 func loadAccount(trie *muxdb.Trie, addr thor.Address) (*Account, error) {
-	data, err := trie.Get(addr[:])
+	data, extra, err := trie.GetExtra(addr[:])
 	if err != nil {
 		return nil, err
 	}
@@ -73,6 +75,11 @@ func loadAccount(trie *muxdb.Trie, addr thor.Address) (*Account, error) {
 	var a Account
 	if err := rlp.DecodeBytes(data, &a); err != nil {
 		return nil, err
+	}
+	if len(extra) > 0 {
+		if err := rlp.DecodeBytes(extra, &a.storageVer); err != nil {
+			return nil, err
+		}
 	}
 	return &a, nil
 }
@@ -88,6 +95,14 @@ func saveAccount(trie *muxdb.Trie, addr thor.Address, a *Account) error {
 	data, err := rlp.EncodeToBytes(a)
 	if err != nil {
 		return err
+	}
+
+	if len(a.StorageRoot) > 0 {
+		extra, err := rlp.EncodeToBytes(&a.storageVer)
+		if err != nil {
+			return err
+		}
+		return trie.UpdateExtra(addr[:], data, extra)
 	}
 	return trie.Update(addr[:], data)
 }

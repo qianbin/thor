@@ -7,7 +7,6 @@ package muxdb
 
 import (
 	"github.com/coocood/freecache"
-	lru "github.com/hashicorp/golang-lru"
 )
 
 const (
@@ -20,72 +19,33 @@ const (
 )
 
 type trieCache struct {
-	enc [trieNodeCacheSeg]*freecache.Cache // for encoded nodes
-	dec [trieNodeCacheSeg]*lru.Cache       // for decoded nodes
+	cache *freecache.Cache // for encoded nodes
 }
 
-func newTrieCache(encSizeMB int, decCapacity int) *trieCache {
+func newTrieCache(encSizeMB int) *trieCache {
 	var cache trieCache
 	if encSizeMB > 0 {
-		for i := 0; i < trieNodeCacheSeg; i++ {
-			cache.enc[i] = freecache.NewCache(encSizeMB * 1024 * 1024 / trieNodeCacheSeg)
-		}
-	}
-	if decCapacity > 0 {
-		for i := 0; i < trieNodeCacheSeg; i++ {
-			cache.dec[i], _ = lru.New(decCapacity / trieNodeCacheSeg)
-		}
+		cache.cache = freecache.NewCache(encSizeMB * 1024 * 1024)
 	}
 	return &cache
 }
 
-func (c *trieCache) GetEncoded(key []byte, pathLen int, peek bool) (val []byte) {
-	i := pathLen
-	if i >= trieNodeCacheSeg {
-		i = trieNodeCacheSeg - 1
+func (c *trieCache) Get(key []byte, pathLen int, peek bool) (val []byte) {
+	if c == nil || c.cache == nil {
+		return
 	}
-	if enc := c.enc[i]; enc != nil {
-		if peek {
-			val, _ = enc.Peek(key)
-		} else {
-			val, _ = enc.Get(key)
-		}
+
+	if peek {
+		val, _ = c.cache.Peek(key)
+	} else {
+		val, _ = c.cache.Get(key)
 	}
 	return
 }
-func (c *trieCache) SetEncoded(key, val []byte, pathLen int) {
-	i := pathLen
-	if i >= trieNodeCacheSeg {
-		i = trieNodeCacheSeg - 1
-	}
-	if enc := c.enc[i]; enc != nil {
-		_ = enc.Set(key, val, 8*3600)
-	}
-}
-
-func (c *trieCache) GetDecoded(key []byte, pathLen int, peek bool) (val interface{}) {
-	i := pathLen
-	if i >= trieNodeCacheSeg {
-		i = trieNodeCacheSeg - 1
+func (c *trieCache) Set(key, val []byte, pathLen int) {
+	if c == nil || c.cache == nil {
+		return
 	}
 
-	if dec := c.dec[i]; dec != nil {
-		if peek {
-			val, _ = dec.Peek(string(key))
-		} else {
-			val, _ = dec.Get(string(key))
-		}
-	}
-	return
-}
-
-func (c *trieCache) SetDecoded(key []byte, val interface{}, pathLen int) {
-	i := pathLen
-	if i >= trieNodeCacheSeg {
-		i = trieNodeCacheSeg - 1
-	}
-
-	if dec := c.dec[i]; dec != nil {
-		dec.Add(string(key), val)
-	}
+	_ = c.cache.Set(key, val, 8*3600)
 }

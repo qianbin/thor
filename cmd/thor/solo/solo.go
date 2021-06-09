@@ -154,7 +154,7 @@ func (s *Solo) packing(pendingTxs tx.Transactions, onDemand bool) error {
 		return nil
 	}
 
-	if _, err := stage.Commit(); err != nil {
+	if _, err := stage.Commit(nil); err != nil {
 		return errors.WithMessage(err, "commit state")
 	}
 

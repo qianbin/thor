@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/thor"
@@ -25,12 +26,10 @@ type bench struct {
 
 func (b *bench) openDB() (*muxdb.MuxDB, error) {
 	return muxdb.Open(b.path, &muxdb.Options{
-		EncodedTrieNodeCacheSizeMB:   0,
-		DecodedTrieNodeCacheCapacity: 0,
-		DisablePageCache:             true,
-		OpenFilesCacheCapacity:       500,
-		ReadCacheMB:                  256,
-		WriteBufferMB:                128,
+		DisablePageCache:       true,
+		OpenFilesCacheCapacity: 500,
+		ReadCacheMB:            256,
+		WriteBufferMB:          128,
 	})
 }
 
@@ -41,7 +40,7 @@ func (b *bench) Write(f func(put kv.PutFunc) error) error {
 	}
 	defer db.Close()
 
-	root, err := loadRoot(db)
+	root, v, err := loadRoot(db)
 	if err != nil {
 		return err
 	}
@@ -49,9 +48,8 @@ func (b *bench) Write(f func(put kv.PutFunc) error) error {
 	if !root.IsZero() {
 		return nil
 	}
-
 	if b.optimized {
-		tr := db.NewTrie("", thor.Bytes32{})
+		tr := db.NewTrie("", thor.Bytes32{}, 0)
 		count := 0
 
 		if err := f(func(key, val []byte) error {
@@ -59,7 +57,8 @@ func (b *bench) Write(f func(put kv.PutFunc) error) error {
 				return err
 			}
 			if count > 0 && count%10000 == 0 {
-				if _, err := tr.CommitPermanently(); err != nil {
+				v++
+				if _, err := tr.CommitVer(v / 10); err != nil {
 					return err
 				}
 			}
@@ -68,7 +67,8 @@ func (b *bench) Write(f func(put kv.PutFunc) error) error {
 		}); err != nil {
 			return err
 		}
-		if root, err = tr.CommitPermanently(); err != nil {
+		v++
+		if root, err = tr.CommitVer(v / 10); err != nil {
 			return err
 		}
 	} else {
@@ -96,7 +96,7 @@ func (b *bench) Write(f func(put kv.PutFunc) error) error {
 			return err
 		}
 	}
-	return saveRoot(db, root)
+	return saveRoot(db, root, v/10)
 }
 
 func (b *bench) Read(f func(get kv.GetFunc) error) error {
@@ -106,14 +106,14 @@ func (b *bench) Read(f func(get kv.GetFunc) error) error {
 	}
 	defer db.Close()
 
-	root, err := loadRoot(db)
+	root, v, err := loadRoot(db)
 	if err != nil {
 		return err
 	}
 
 	if b.optimized {
 		return f(func(key []byte) ([]byte, error) {
-			return db.NewTrie("", root).Get(key)
+			return db.NewTrie("", root, v).Get(key)
 		})
 	}
 
@@ -133,14 +133,14 @@ func (b *bench) Iterate(n int) error {
 	}
 	defer db.Close()
 
-	root, err := loadRoot(db)
+	root, v, err := loadRoot(db)
 	if err != nil {
 		return err
 	}
 
 	var iter trie.NodeIterator
 	if b.optimized {
-		iter = db.NewTrie("", root).NodeIterator(nil)
+		iter = db.NewTrie("", root, v).NodeIterator(nil)
 	} else {
 		tr, err := trie.New(root, db.LowStore())
 		if err != nil {
@@ -199,17 +199,28 @@ func (b *bench) Run() error {
 	return nil
 }
 
-func loadRoot(db *muxdb.MuxDB) (thor.Bytes32, error) {
+type vroot struct {
+	V    uint32
+	Root thor.Bytes32
+}
+
+func loadRoot(db *muxdb.MuxDB) (thor.Bytes32, uint32, error) {
 	val, err := db.NewStore("c").Get([]byte(rootKey))
 	if err != nil {
 		if db.IsNotFound(err) {
-			return thor.Bytes32{}, nil
+			return thor.Bytes32{}, 0, nil
 		}
-		return thor.Bytes32{}, err
+		return thor.Bytes32{}, 0, err
 	}
-	return thor.BytesToBytes32(val), nil
+	var vr vroot
+	rlp.DecodeBytes(val, &vr)
+	return vr.Root, vr.V, nil
 }
 
-func saveRoot(db *muxdb.MuxDB, root thor.Bytes32) error {
-	return db.NewStore("c").Put([]byte(rootKey), root[:])
+func saveRoot(db *muxdb.MuxDB, root thor.Bytes32, v uint32) error {
+	enc, _ := rlp.EncodeToBytes(&vroot{
+		v,
+		root,
+	})
+	return db.NewStore("c").Put([]byte(rootKey), enc)
 }

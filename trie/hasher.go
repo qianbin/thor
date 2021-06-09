@@ -62,13 +62,13 @@ func returnHasherToPool(h *hasher) {
 
 // hash collapses a node down into a hash node, also returning a copy of the
 // original node initialized with the computed hash to replace the original one.
-func (h *hasher) hash(n node, db DatabaseWriter, path []byte, force bool) (node, node, error) {
+func (h *hasher) hash(n node, db DatabaseWriter, path []byte, force bool, newVer uint32) (node, node, error) {
 	// If we're not storing the node, just hashing, use available cached data
 	if hash, dirty := n.cache(); hash != nil {
 		if db == nil {
 			return hash, n, nil
 		}
-		if !dirty {
+		if !dirty && !force { // !force is non-root node, that means root node is always stored
 			switch n.(type) {
 			case *fullNode, *shortNode:
 				return hash, hash, nil
@@ -78,18 +78,18 @@ func (h *hasher) hash(n node, db DatabaseWriter, path []byte, force bool) (node,
 		}
 	}
 	// Trie not processed yet or needs storage, walk the children
-	collapsed, cached, err := h.hashChildren(n, db, path)
+	collapsed, cached, cVers, err := h.hashChildren(n, db, path, newVer)
 	if err != nil {
-		return hashNode{}, n, err
+		return nil, n, err
 	}
-	hashed, err := h.store(collapsed, db, path, force)
+	hashed, err := h.store(collapsed, db, path, force, newVer, cVers)
 	if err != nil {
-		return hashNode{}, n, err
+		return nil, n, err
 	}
 	// Cache the hash of the node for later reuse and remove
 	// the dirty flag in commit mode. It's fine to assign these values directly
 	// without copying the node first because hashChildren copies it.
-	cachedHash, _ := hashed.(hashNode)
+	cachedHash, _ := hashed.(*hashNode)
 	switch cn := cached.(type) {
 	case *shortNode:
 		cn.flags.hash = cachedHash
@@ -108,7 +108,7 @@ func (h *hasher) hash(n node, db DatabaseWriter, path []byte, force bool) (node,
 // hashChildren replaces the children of a node with their hashes if the encoded
 // size of the child is larger than a hash, returning the collapsed node as well
 // as a replacement for the original node with the child hashes cached in.
-func (h *hasher) hashChildren(original node, db DatabaseWriter, path []byte) (node, node, error) {
+func (h *hasher) hashChildren(original node, db DatabaseWriter, path []byte, newVer uint32) (node, node, []uint32, error) {
 	var err error
 
 	switch n := original.(type) {
@@ -117,48 +117,57 @@ func (h *hasher) hashChildren(original node, db DatabaseWriter, path []byte) (no
 		collapsed, cached := n.copy(), n.copy()
 		collapsed.Key = hexToCompact(n.Key)
 		cached.Key = common.CopyBytes(n.Key)
-
+		var cVers []uint32
 		if _, ok := n.Val.(valueNode); !ok {
-
-			collapsed.Val, cached.Val, err = h.hash(n.Val, db, append(path, n.Key...), false)
+			collapsed.Val, cached.Val, err = h.hash(n.Val, db, append(path, n.Key...), false, newVer)
 			if err != nil {
-				return original, original, err
+				return original, original, nil, err
+			}
+			if cVer := collapsed.Val.version(); cVer != 0 {
+				cVers = []uint32{cVer}
 			}
 		}
 		if collapsed.Val == nil {
 			collapsed.Val = valueNode(nil) // Ensure that nil children are encoded as empty strings.
 		}
-		return collapsed, cached, nil
+		return collapsed, cached, cVers, nil
 
 	case *fullNode:
 		// Hash the full node's children, caching the newly hashed subtrees
 		collapsed, cached := n.copy(), n.copy()
-
+		var cVers [16]uint32
 		for i := 0; i < 16; i++ {
 			if n.Children[i] != nil {
-				collapsed.Children[i], cached.Children[i], err = h.hash(n.Children[i], db, append(path, byte(i)), false)
+				collapsed.Children[i], cached.Children[i], err = h.hash(n.Children[i], db, append(path, byte(i)), false, newVer)
 				if err != nil {
-					return original, original, err
+					return original, original, nil, err
 				}
+				cVers[i] = collapsed.Children[i].version()
 			} else {
 				collapsed.Children[i] = valueNode(nil) // Ensure that nil children are encoded as empty strings.
 			}
 		}
-		cached.Children[16] = n.Children[16]
 		if collapsed.Children[16] == nil {
 			collapsed.Children[16] = valueNode(nil)
 		}
-		return collapsed, cached, nil
+		var trimmedVers []uint32
+		for i := len(cVers) - 1; i >= 0; i-- {
+			if cVers[i] != 0 {
+				trimmedVers = cVers[:i+1]
+				break
+			}
+		}
+		return collapsed, cached, trimmedVers, nil
 
 	default:
 		// Value and hash nodes don't have children so they're left as were
-		return n, original, nil
+		return n, original, nil, nil
 	}
 }
 
-func (h *hasher) store(n node, db DatabaseWriter, path []byte, force bool) (node, error) {
+func (h *hasher) store(n node, db DatabaseWriter, path []byte, force bool, newVer uint32, cVers []uint32) (node, error) {
 	// Don't store hashes or empty nodes.
-	if _, isHash := n.(hashNode); n == nil || isHash {
+	if _, isHash := n.(*hashNode); n == nil || isHash {
 		return n, nil
 	}
 	// Generate the RLP encoding of the node
@@ -175,17 +184,28 @@ func (h *hasher) store(n node, db DatabaseWriter, path []byte, force bool) (node
 	if hash == nil {
 		h.sha.Reset()
 		h.sha.Write(h.tmp)
-		hash = hashNode(h.sha.Sum(nil))
+		hash = &hashNode{hash: h.sha.Sum(nil)}
 	}
 	if db != nil {
 		if ex, ok := db.(DatabaseWriterEx); ok {
-			return hash, ex.PutEncoded(&NodeKey{
-				hash,
+			if err := rlp.Encode(&h.tmp, cVers); err != nil {
+				return nil, err
+			}
+			switch n := n.(type) {
+			case *shortNode:
+				h.tmp.Write(n.flags.extra)
+			case *fullNode:
+				h.tmp.Write(n.flags.extra)
+			}
+			hash.ver = newVer
+			return hash, ex.PutEx(&CompositKey{
+				hash.hash,
+				newVer,
 				path,
 				false,
-			}, h.tmp)
+			}, CompositValue(h.tmp))
 		}
-		return hash, db.Put(hash, h.tmp)
+		return hash, db.Put(hash.hash, h.tmp)
 	}
 	return hash, nil
 }

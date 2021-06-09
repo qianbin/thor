@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/pkg/errors"
 	"github.com/vechain/thor/block"
+	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/tx"
@@ -55,7 +56,7 @@ func newChain(repo *Repository, headID thor.Bytes32) *Chain {
 			if indexTrie == nil && initErr == nil {
 				var summary *BlockSummary
 				if summary, initErr = repo.GetBlockSummary(headID); initErr == nil {
-					indexTrie = repo.db.NewTrie(IndexTrieName, summary.IndexRoot)
+					indexTrie = repo.db.NewTrie(IndexTrieName, summary.IndexRoot, summary.Header.Number())
 				}
 			}
 			return indexTrie, initErr
@@ -269,7 +270,7 @@ func (r *Repository) indexBlock(parentIndexRoot thor.Bytes32, block *block.Block
 		return thor.Bytes32{}, errors.New("txs count != receipts count")
 	}
 
-	trie := r.db.NewTrie(IndexTrieName, parentIndexRoot)
+	trie := r.db.NewTrie(IndexTrieName, parentIndexRoot, block.Header().Number()-1)
 	id := block.Header().ID()
 
 	// map block number to block ID
@@ -290,6 +291,28 @@ func (r *Repository) indexBlock(parentIndexRoot thor.Bytes32, block *block.Block
 		if err := trie.Update(tx.ID().Bytes(), enc); err != nil {
 			return thor.Bytes32{}, err
 		}
+	}
+
+	ss := r.db.NewBucket([]byte(string(muxdb.TrieJournalSpace) + string(id[:]) + IndexTrieName))
+	if err := ss.Batch(func(put kv.PutFlusher) error {
+		for _, i := range trie.Journal() {
+			if len(i.V) > 0 {
+				enc, _ := rlp.EncodeToBytes([]interface{}{
+					i.V,
+					i.Extra,
+				})
+				if err := put.Put(i.K, enc); err != nil {
+					return err
+				}
+			} else {
+				if err := put.Put(i.K, nil); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		return thor.Bytes32{}, err
 	}
 	return trie.Commit()
 }
