@@ -86,7 +86,7 @@ func newTrie(
 				nil, // leave out trie.Database, since here provides trie.DatabaseReaderEx impl
 				tr.getEx,
 				tr.directGet,
-			}, bn>>4)
+			}, bn>>8)
 		}
 		return trieObj, initErr
 	}
@@ -96,7 +96,7 @@ func newTrie(
 func (t *Trie) directGet(key []byte, nodeVer uint32) ([]byte, []byte, bool, error) {
 	if t.leafCache != nil {
 		key = append([]byte(t.name), key...)
-		return t.leafCache.Get(t.bn>>4, nodeVer, key)
+		return t.leafCache.Get(t.bn>>8, nodeVer, key)
 	}
 	return nil, nil, false, nil
 }
@@ -260,9 +260,11 @@ func (t *Trie) getEx(key *trie.CompositKey) (val trie.CompositValue, err error) 
 		}); err != nil {
 			return
 		}
-		// skip caching when scaning(iterating) a trie, to prevent the cache from
-		// being over filled.
-		t.cache.Set(t.keyBuf[1:], val, len(key.Path))
+		if !key.Scaning {
+			// skip caching when scaning(iterating) a trie, to prevent the cache from
+			// being over filled.
+			t.cache.Set(t.keyBuf[1:], val, len(key.Path))
+		}
 	}
 	return
 }
@@ -293,7 +295,7 @@ func (t *Trie) doCommit(putter kv.Putter, trieObj *trie.Trie, newBN uint32) (roo
 			t.keyBuf.SetHot()
 			return putter.Put(t.keyBuf[:], val)
 		},
-	}, newBN>>4)
+	}, newBN>>8)
 }
 
 // errorIterator an iterator always in error state.

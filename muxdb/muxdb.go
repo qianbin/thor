@@ -63,13 +63,14 @@ type MuxDB struct {
 func Open(path string, options *Options) (*MuxDB, error) {
 	// prepare leveldb options
 	ldbOpts := opt.Options{
-		OpenFilesCacheCapacity:        options.OpenFilesCacheCapacity,
-		BlockCacheCapacity:            options.ReadCacheMB * opt.MiB,
-		WriteBuffer:                   options.WriteBufferMB * opt.MiB,
-		Filter:                        filter.NewBloomFilter(10),
-		BlockSize:                     1024 * 32, // balance performance of point reads and compression ratio.
-		DisableSeeksCompaction:        true,
-		CompactionTableSizeMultiplier: 2,
+		OpenFilesCacheCapacity: options.OpenFilesCacheCapacity,
+		BlockCacheCapacity:     options.ReadCacheMB * opt.MiB,
+		WriteBuffer:            options.WriteBufferMB * opt.MiB,
+		Filter:                 filter.NewBloomFilter(10),
+		BlockSize:              1024 * 32, // balance performance of point reads and compression ratio.
+		DisableSeeksCompaction: true,
+		CompactionTableSize:    opt.MiB * 32,
+		// CompactionTableSizeMultiplier: 2,
 		VibrantKeys: []*util.Range{
 			util.BytesPrefix([]byte{trieHotSpace}),
 			util.BytesPrefix([]byte{trieSecureKeySpace}),

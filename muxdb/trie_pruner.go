@@ -100,7 +100,7 @@ func (p *TriePruner) DropStaleNodes(ctx context.Context, limitBlockNum uint32) (
 		var limit [5]byte
 		limit[0] = trieHotSpace
 
-		binary.BigEndian.PutUint32(limit[1:], limitBlockNum>>4)
+		binary.BigEndian.PutUint32(limit[1:], limitBlockNum>>8)
 
 		rng := kv.Range{
 			Start: []byte{trieHotSpace},

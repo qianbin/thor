@@ -77,7 +77,7 @@ func (p *Pruner) Stop() {
 
 func (p *Pruner) xx() error {
 	lc := p.db.LeafCache()
-	const step = 1 << 4
+	const step = 1 << 8
 
 	go func() {
 		for {
@@ -89,8 +89,8 @@ func (p *Pruner) xx() error {
 	v := lc.Ver()
 
 	for {
-		n := (v) << 4
-		nn := (v + 1) << 4
+		n := (v) << 8
+		nn := (v + 1) << 8
 		bc := p.repo.NewBestChain()
 		if n+step+128 < block.Number(bc.HeadID()) {
 			j := p.db.NewBucket([]byte{muxdb.TrieJournalSpace})
@@ -205,7 +205,7 @@ func (p *Pruner) loop() error {
 			// 	return err
 			// }
 			status.N1 = status.N2
-			status.N2 += 1024 * 16
+			status.N2 += 8192
 			// not necessary to prune if n2 is too small
 			// if status.N2 < thor.MaxStateHistory {
 			// 	status.N2 = thor.MaxStateHistory
