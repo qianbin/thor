@@ -82,7 +82,7 @@ func (p *Pruner) xx() error {
 	go func() {
 		for {
 			<-time.After(20 * time.Second)
-			log.Info("LeafCache", "range", lc.Ver()*16)
+			log.Info("LeafCache", "range", lc.Ver()<<8)
 		}
 	}()
 
