@@ -77,20 +77,20 @@ func (p *Pruner) Stop() {
 
 func (p *Pruner) xx() error {
 	lc := p.db.LeafCache()
-	const step = 1 << 8
+	const step = 1024
 
 	go func() {
 		for {
 			<-time.After(20 * time.Second)
-			log.Info("LeafCache", "range", lc.Ver()<<8)
+			log.Info("LeafCache", "range", lc.Ver())
 		}
 	}()
 
 	v := lc.Ver()
 
 	for {
-		n := (v) << 8
-		nn := (v + 1) << 8
+		n := v
+		nn := n + step
 		bc := p.repo.NewBestChain()
 		if n+step+128 < block.Number(bc.HeadID()) {
 			j := p.db.NewBucket([]byte{muxdb.TrieJournalSpace})
@@ -126,7 +126,7 @@ func (p *Pruner) xx() error {
 			if err := lc.Flush(v); err != nil {
 				return err
 			}
-			v++
+			v += step
 			if err = j.Iterate(rng, func(pair kv.Pair) bool {
 				i := 0
 				err = j.Batch(func(p kv.PutFlusher) error {

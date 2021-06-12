@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/pkg/errors"
 	"github.com/vechain/thor/block"
+	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/tx"
@@ -292,26 +293,26 @@ func (r *Repository) indexBlock(parentIndexRoot thor.Bytes32, block *block.Block
 		}
 	}
 
-	// ss := r.db.NewBucket([]byte(string(muxdb.TrieJournalSpace) + string(id[:]) + IndexTrieName))
-	// if err := ss.Batch(func(put kv.PutFlusher) error {
-	// 	for _, i := range trie.Journal() {
-	// 		if len(i.V) > 0 {
-	// 			enc, _ := rlp.EncodeToBytes([]interface{}{
-	// 				i.V,
-	// 				i.Extra,
-	// 			})
-	// 			if err := put.Put(i.K, enc); err != nil {
-	// 				return err
-	// 			}
-	// 		} else {
-	// 			if err := put.Put(i.K, nil); err != nil {
-	// 				return err
-	// 			}
-	// 		}
-	// 	}
-	// 	return nil
-	// }); err != nil {
-	// 	return thor.Bytes32{}, err
-	// }
+	ss := r.db.NewBucket([]byte(string(muxdb.TrieJournalSpace) + string(id[:]) + IndexTrieName))
+	if err := ss.Batch(func(put kv.PutFlusher) error {
+		for _, i := range trie.Journal() {
+			if len(i.V) > 0 {
+				enc, _ := rlp.EncodeToBytes([]interface{}{
+					i.V,
+					i.Extra,
+				})
+				if err := put.Put(i.K, enc); err != nil {
+					return err
+				}
+			} else {
+				if err := put.Put(i.K, nil); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		return thor.Bytes32{}, err
+	}
 	return trie.Commit()
 }

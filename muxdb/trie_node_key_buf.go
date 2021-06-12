@@ -40,27 +40,20 @@ func (b trieNodeKeyBuf) SetCold() {
 }
 
 func compactPath(dest, path []byte) {
-	for i := 0; i < 8; i++ {
-		dest[i] = 0
-	}
-
 	pathLen := len(path)
 	if pathLen > 15 {
 		pathLen = 15
 	}
-
-	if pathLen > 0 {
-		// compact at most 15 nibbles and term with path len.
-		for i := 0; i < pathLen; i++ {
-			if i%2 == 0 {
-				dest[i/2] |= (path[i] << 4)
-			} else {
-				dest[i/2] |= path[i]
-			}
+	dest[0] = byte(pathLen) << 4
+	for i := 0; i < 15; i++ {
+		x := byte(0)
+		if i < len(path) {
+			x = path[i]
 		}
-		dest[7] |= byte(pathLen)
-	} else {
-		// narrow the affected key range of nodes produced by trie commitment.
-		dest[0] = (8 << 4)
+		if i%2 == 0 {
+			dest[(i+1)/2] |= x
+		} else {
+			dest[(i+1)/2] = (x << 4)
+		}
 	}
 }
