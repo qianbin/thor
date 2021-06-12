@@ -69,8 +69,8 @@ func Open(path string, options *Options) (*MuxDB, error) {
 		Filter:                 filter.NewBloomFilter(10),
 		BlockSize:              1024 * 32, // balance performance of point reads and compression ratio.
 		DisableSeeksCompaction: true,
-		CompactionTableSize:    opt.MiB * 32,
-		// CompactionTableSizeMultiplier: 2,
+		// CompactionTableSize:    opt.MiB * 32,
+		CompactionTableSizeMultiplier: 2,
 		VibrantKeys: []*util.Range{
 			util.BytesPrefix([]byte{trieHotSpace}),
 			util.BytesPrefix([]byte{trieSecureKeySpace}),

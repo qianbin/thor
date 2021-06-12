@@ -20,14 +20,14 @@ type trieNodeKeyBuf []byte
 
 func newTrieNodeKeyBuf(name string) trieNodeKeyBuf {
 	nameLen := len(name)
-	buf := make([]byte, 1+4+nameLen+8+32)
-	copy(buf[1+4:], name)
+	buf := make([]byte, 1+nameLen+8+4+32)
+	copy(buf[1:], name)
 	return buf
 }
 
 func (b trieNodeKeyBuf) SetParts(ver uint32, path, hash []byte) {
-	binary.BigEndian.PutUint32(b[1:], ver)
-	compactPath(b[len(b)-32-8:], path)
+	binary.BigEndian.PutUint32(b[len(b)-32-4:], ver)
+	compactPath(b[len(b)-32-4-8:], path)
 	copy(b[len(b)-32:], hash)
 }
 

@@ -52,20 +52,20 @@ func New(db *muxdb.MuxDB, repo *chain.Repository) *Pruner {
 		ctx:    ctx,
 		cancel: cancel,
 	}
-	p.goes.Go(func() {
-		if err := p.loop(); err != nil {
-			if err != context.Canceled {
-				log.Warn("pruner interrupted", "error", err)
-			}
-		}
-	})
-	p.goes.Go(func() {
-		if err := p.xx(); err != nil {
-			if err != context.Canceled {
-				log.Warn("xx interrupted", "error", err)
-			}
-		}
-	})
+	// p.goes.Go(func() {
+	// 	if err := p.loop(); err != nil {
+	// 		if err != context.Canceled {
+	// 			log.Warn("pruner interrupted", "error", err)
+	// 		}
+	// 	}
+	// })
+	// p.goes.Go(func() {
+	// 	if err := p.xx(); err != nil {
+	// 		if err != context.Canceled {
+	// 			log.Warn("xx interrupted", "error", err)
+	// 		}
+	// 	}
+	// })
 	return p
 }
 
@@ -349,6 +349,14 @@ func (p *Pruner) archiveAccountTrie(pruner *muxdb.TriePruner, n1, n2 uint32) (no
 	t1 := p.db.NewTrie(state.AccountTrieName, root1, n1)
 	t2 := p.db.NewTrie(state.AccountTrieName, root2, n2)
 
+	type sss struct {
+		n      string
+		r1, r2 thor.Bytes32
+		v1, v2 uint32
+	}
+
+	var ss []*sss
+
 	nodeCount, entryCount, err = pruner.ArchiveNodes(p.ctx, t1, t2, func(key, blob1, extra1, blob2, extra2 []byte) error {
 		var sRoot1, sRoot2 thor.Bytes32
 		var sv1, sv2 uint32
@@ -373,20 +381,30 @@ func (p *Pruner) archiveAccountTrie(pruner *muxdb.TriePruner, n1, n2 uint32) (no
 			}
 		}
 		if !sRoot2.IsZero() {
-			tn := state.StorageTrieName(thor.BytesToBytes32(key))
-			// fmt.Println(sRoot1, sv1)
-			// fmt.Println(sRoot2, sv2)
-			t1 := p.db.NewTrie(tn, sRoot1, sv1)
-			t2 := p.db.NewTrie(tn, sRoot2, sv2)
-			n, e, err := pruner.ArchiveNodes(p.ctx, t1, t2, nil)
-			if err != nil {
-				return err
-			}
-			storageNodeCount += n
-			storageEntryCount += e
+			ss = append(ss, &sss{
+				n:  state.StorageTrieName(thor.BytesToBytes32(key)),
+				r1: sRoot1,
+				r2: sRoot2,
+				v1: sv1,
+				v2: sv2,
+			})
 		}
 		// }
 		return nil
 	})
+
+	for _, s := range ss {
+		// fmt.Println(sRoot1, sv1)
+		// fmt.Println(sRoot2, sv2)
+		t1 := p.db.NewTrie(s.n, s.r1, s.v1)
+		t2 := p.db.NewTrie(s.n, s.r2, s.v2)
+		var n, e int
+		n, e, err = pruner.ArchiveNodes(p.ctx, t1, t2, nil)
+		if err != nil {
+			return
+		}
+		storageNodeCount += n
+		storageEntryCount += e
+	}
 	return
 }
