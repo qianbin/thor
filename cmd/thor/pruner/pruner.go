@@ -59,13 +59,13 @@ func New(db *muxdb.MuxDB, repo *chain.Repository) *Pruner {
 	// 		}
 	// 	}
 	// })
-	// p.goes.Go(func() {
-	// 	if err := p.xx(); err != nil {
-	// 		if err != context.Canceled {
-	// 			log.Warn("xx interrupted", "error", err)
-	// 		}
-	// 	}
-	// })
+	p.goes.Go(func() {
+		if err := p.xx(); err != nil {
+			if err != context.Canceled {
+				log.Warn("xx interrupted", "error", err)
+			}
+		}
+	})
 	return p
 }
 
