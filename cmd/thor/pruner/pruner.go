@@ -13,11 +13,13 @@ import (
 
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/inconshreveable/log15"
+	"github.com/syndtr/goleveldb/leveldb/util"
 	"github.com/vechain/thor/block"
 	"github.com/vechain/thor/chain"
 	"github.com/vechain/thor/co"
 	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/muxdb"
+	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
 )
 
@@ -72,6 +74,14 @@ func New(db *muxdb.MuxDB, repo *chain.Repository) *Pruner {
 			}
 		}
 	})
+	p.goes.Go(func() {
+		if err := p.pruneAccTrie(); err != nil {
+			if err != context.Canceled {
+				log.Warn("pruneAccountTrie interrupted", "error", err)
+			}
+		}
+	})
+
 	return p
 }
 
@@ -183,24 +193,20 @@ func (p *Pruner) waitUntil(n uint32) error {
 	}
 }
 
-func (p *Pruner) saveState(name string, n uint32) error {
-	data, _ := rlp.EncodeToBytes(&n)
+func (p *Pruner) saveState(name string, val interface{}) error {
+	data, _ := rlp.EncodeToBytes(val)
 	return p.db.NewStore("pruner-state").Put([]byte(name), data)
 }
 
-func (p *Pruner) loadState(name string) (uint32, error) {
+func (p *Pruner) loadState(name string, val interface{}) error {
 	data, err := p.db.NewStore("pruner-state").Get([]byte(name))
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if len(data) == 0 {
-		return 0, nil
+		return nil
 	}
-	var n uint32
-	if err := rlp.DecodeBytes(data, &n); err != nil {
-		return 0, err
-	}
-	return n, nil
+	return rlp.DecodeBytes(data, val)
 }
 
 func pathToNum(path []byte) uint32 {
@@ -216,16 +222,61 @@ func pathToNum(path []byte) uint32 {
 	return v
 }
 
+func (p *Pruner) cleanTrie(tr *muxdb.Trie) (int, error) {
+	var (
+		// path -> ver
+		m           = make(map[uint32]uint32)
+		deleteCount = 0
+	)
+
+	it := tr.NodeIterator(nil)
+	for it.Next(len(it.Path()) < 4) {
+		if !it.Hash().IsZero() && len(it.Path()) <= 4 {
+			m[pathToNum(it.Path())] = it.Ver()
+		}
+	}
+	if err := it.Error(); err != nil {
+		return 0, err
+	}
+	bk := p.db.NewBucket([]byte(string(byte(0)) + tr.Name()))
+	rng := kv.Range{
+		Start: []byte{0x00},
+		Limit: []byte{0x50},
+	}
+
+	if err := bk.Batch(func(putter kv.PutFlusher) error {
+		var err error
+		bk.Iterate(rng, func(pair kv.Pair) bool {
+			v := binary.BigEndian.Uint32(pair.Key())
+			if ver, ok := m[v]; ok {
+				if binary.BigEndian.Uint32(pair.Key()[8:]) < ver {
+					err = putter.Delete(pair.Key())
+					deleteCount++
+				}
+			}
+			if deleteCount%1000 == 0 {
+				err = putter.Flush()
+			}
+			return err == nil
+		})
+		return err
+	}); err != nil {
+		return 0, err
+	}
+	return deleteCount, nil
+}
+
 func (p *Pruner) pruneIndexTrie() error {
-	const stateName = "index-trie"
 	deleteCount := 0
+	var n uint32
+	p.loadState(chain.IndexTrieName, &n)
 	go func() {
 		for {
 			<-time.After(15 * time.Second)
-			log.Info("=====pruneIndexTrie", "delete", deleteCount)
+			log.Info("=====IndexTrie", "n", n, "delete", deleteCount)
 		}
 	}()
-	n, _ := p.loadState(stateName)
+
 	for {
 		n += 1024
 		if err := p.waitUntil(n + 128); err != nil {
@@ -239,45 +290,12 @@ func (p *Pruner) pruneIndexTrie() error {
 		if err != nil {
 			return err
 		}
-		tr := p.db.NewTrie(chain.IndexTrieName, sum.IndexRoot, n)
-		it := tr.NodeIterator(nil)
-
-		// path -> ver
-		m := make(map[uint32]uint32)
-		for it.Next(len(it.Path()) < 4) {
-			if !it.Hash().IsZero() {
-				m[pathToNum(it.Path())] = it.Ver()
-			}
-		}
-		if err := it.Error(); err != nil {
+		dn, err := p.cleanTrie(p.db.NewTrie(chain.IndexTrieName, sum.IndexRoot, n))
+		if err != nil {
 			return err
 		}
-
-		bk := p.db.NewBucket([]byte(string(byte(0)) + chain.IndexTrieName))
-		rng := kv.Range{
-			Start: []byte{0},
-			Limit: []byte{0x50},
-		}
-		if err := bk.Batch(func(putter kv.PutFlusher) error {
-			var err error
-			bk.Iterate(rng, func(pair kv.Pair) bool {
-				v := binary.BigEndian.Uint32(pair.Key())
-				if ver, ok := m[v]; ok {
-					if binary.BigEndian.Uint32(pair.Key()[8:]) < ver {
-						err = putter.Delete(pair.Key())
-						deleteCount++
-					}
-				}
-				if deleteCount%1000 == 0 {
-					err = putter.Flush()
-				}
-				return err == nil
-			})
-			return err
-		}); err != nil {
-			return err
-		}
-		p.saveState(stateName, n)
+		deleteCount += dn
+		p.saveState(chain.IndexTrieName, n)
 		select {
 		case <-p.ctx.Done():
 			return p.ctx.Err()
@@ -285,6 +303,183 @@ func (p *Pruner) pruneIndexTrie() error {
 		}
 	}
 }
+
+func (p *Pruner) pruneAccTrie() error {
+	deleteCount := 0
+	deleteSCount := 0
+	var n uint32
+	var sAddr thor.Address
+	p.loadState(state.AccountTrieName, &n)
+	p.loadState("s", &sAddr)
+	go func() {
+		for {
+			<-time.After(15 * time.Second)
+			log.Info("=====AccountTrie", "n", n, "delete", deleteCount, "deleteStorage", deleteSCount)
+		}
+	}()
+
+	for {
+		n += 1024
+		if err := p.waitUntil(n + thor.MaxStateHistory + 128); err != nil {
+			return err
+		}
+
+		header, err := p.repo.NewBestChain().GetBlockHeader(n)
+		if err != nil {
+			return err
+		}
+
+		dn, err := p.cleanTrie(p.db.NewTrie(state.AccountTrieName, header.StateRoot(), header.Number()))
+		if err != nil {
+			return err
+		}
+		deleteCount += dn
+		p.saveState(state.AccountTrieName, n)
+		//
+		p.iterateStorage(sAddr, func(addr thor.Address) error {
+			sAddr = addr
+			if err := p.saveState("s", sAddr); err != nil {
+				return err
+			}
+			accTrie := p.db.NewSecureTrie(state.AccountTrieName, header.StateRoot(), header.Number())
+			data, extra, err := accTrie.GetExtra(addr[:])
+			if err != nil {
+				return err
+			}
+			if len(data) > 0 {
+				var acc state.Account
+				if err := rlp.DecodeBytes(data, &acc); err != nil {
+					return err
+				}
+
+				var ver uint32
+				if len(extra) > 0 {
+					if err := rlp.DecodeBytes(extra, &ver); err != nil {
+						return err
+					}
+				}
+				if ver > n-1024 {
+					str := p.db.NewTrie(state.StorageTrieName(addr), thor.BytesToBytes32(acc.StorageRoot), ver)
+					dn, err := p.cleanTrie(str)
+					if err != nil {
+						return err
+					}
+					deleteSCount += dn
+				}
+			}
+			return nil
+		})
+
+		sAddr = thor.Address{}
+		if err := p.saveState("s", sAddr); err != nil {
+			return err
+		}
+		select {
+		case <-p.ctx.Done():
+			return p.ctx.Err()
+		default:
+		}
+	}
+}
+
+func (p *Pruner) iterateStorage(start thor.Address, cb func(addr thor.Address) error) error {
+	s := p.db.NewBucket([]byte{0, 's'})
+	var rng = kv.Range{
+		Start: start[:],
+	}
+	for {
+		var addr *thor.Address
+		if err := s.Iterate(rng, func(pair kv.Pair) bool {
+			a := thor.BytesToAddress(pair.Key()[0:20])
+			addr = &a
+			return false
+		}); err != nil {
+			return err
+		}
+		if addr == nil {
+			return nil
+		}
+
+		if err := cb(*addr); err != nil {
+			return err
+		}
+		rng.Start = util.BytesPrefix(addr[:]).Limit
+	}
+}
+
+// func (p *Pruner) pruneStorageTrie() error {
+// 	deleteCount := 0
+// 	var s struct {
+// 		N    uint32
+// 		Addr thor.Address
+// 	}
+// 	p.loadState("s", &s)
+// 	go func() {
+// 		for {
+// 			<-time.After(15 * time.Second)
+// 			log.Info("=====StorageTrie", "n", s.N, "delete", deleteCount)
+// 		}
+// 	}()
+
+// 	for {
+// 		n := s.N + 1024
+// 		if err := p.waitUntil(n + thor.MaxStateHistory + 128); err != nil {
+// 			return err
+// 		}
+
+// 		header, err := p.repo.NewBestChain().GetBlockHeader(n)
+// 		if err != nil {
+// 			return err
+// 		}
+
+// 		p.iterateStorage(s.Addr, func(addr thor.Address) error {
+// 			s.Addr = addr
+// 			if err := p.saveState("s", &s); err != nil {
+// 				return err
+// 			}
+// 			accTrie := p.db.NewSecureTrie(state.AccountTrieName, header.StateRoot(), header.Number())
+// 			data, extra, err := accTrie.GetExtra(addr[:])
+// 			if err != nil {
+// 				return err
+// 			}
+// 			if len(data) > 0 {
+// 				var acc state.Account
+// 				if err := rlp.DecodeBytes(data, &acc); err != nil {
+// 					return err
+// 				}
+
+// 				var ver uint32
+// 				if len(extra) > 0 {
+// 					if err := rlp.DecodeBytes(extra, &ver); err != nil {
+// 						return err
+// 					}
+// 				}
+// 				if ver > s.N {
+// 					// tr := p.db.NewTrie(state.StorageTrieName(addr), thor.BytesToBytes32(acc.StorageRoot), ver)
+// 					// dn, err := p.cleanTrie(tr)
+// 					// if err != nil {
+// 					// 	return err
+// 					// }
+// 					// deleteCount += dn
+// 					fmt.Println(addr)
+// 				}
+// 			}
+// 			return nil
+// 		})
+
+// 		s.N = n
+// 		s.Addr = thor.Address{}
+// 		if err := p.saveState("s", &s); err != nil {
+// 			return err
+// 		}
+
+// 		select {
+// 		case <-p.ctx.Done():
+// 			return p.ctx.Err()
+// 		default:
+// 		}
+// 	}
+// }
 
 // func (p *Pruner) loop() error {
 // 	var status status

@@ -6,6 +6,7 @@
 package muxdb
 
 import (
+	"github.com/syndtr/goleveldb/leveldb/util"
 	"github.com/vechain/thor/kv"
 )
 
@@ -42,7 +43,11 @@ func (b bucket) ProxyPutter(putter kv.Putter) kv.Putter {
 
 func (b bucket) MakeRange(r kv.Range) kv.Range {
 	r.Start = b.makeKey(r.Start)
-	r.Limit = b.makeKey(r.Limit)
+	if len(r.Limit) == 0 {
+		r.Limit = util.BytesPrefix(b).Limit
+	} else {
+		r.Limit = b.makeKey(r.Limit)
+	}
 	return r
 }
 
