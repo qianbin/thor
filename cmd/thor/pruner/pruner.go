@@ -319,7 +319,16 @@ func (p *Pruner) pruneAccTrie() error {
 	}()
 
 	for {
-		n += 1024
+		var target uint32
+		bn := p.repo.BestBlock()
+		if bn.Header().Number() > thor.MaxStateHistory+128 {
+			target = bn.Header().Number() - thor.MaxStateHistory - 128
+		}
+		if n+1024 < target {
+			n = target
+		} else {
+			n += 1024
+		}
 		if err := p.waitUntil(n + thor.MaxStateHistory + 128); err != nil {
 			return err
 		}
