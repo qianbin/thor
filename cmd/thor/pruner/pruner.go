@@ -18,7 +18,6 @@ import (
 	"github.com/vechain/thor/co"
 	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/muxdb"
-	"github.com/vechain/thor/state"
 	"github.com/vechain/thor/thor"
 )
 
@@ -63,6 +62,13 @@ func New(db *muxdb.MuxDB, repo *chain.Repository) *Pruner {
 		if err := p.xx(); err != nil {
 			if err != context.Canceled {
 				log.Warn("xx interrupted", "error", err)
+			}
+		}
+	})
+	p.goes.Go(func() {
+		if err := p.pruneIndexTrie(); err != nil {
+			if err != context.Canceled {
+				log.Warn("pruneIndexTrie interrupted", "error", err)
 			}
 		}
 	})
@@ -159,102 +165,223 @@ func (p *Pruner) xx() error {
 		}
 	}
 }
+
 func (p *Pruner) loop() error {
-	var status status
-	if err := status.Load(p.db); err != nil {
-		return err
-	}
-	if status.Cycles == 0 && status.Step == stepInitiate {
-		log.Info("pruner started")
-	} else {
-		log.Info("pruner started", "range", fmt.Sprintf("[%v, %v]", status.N1, status.N2), "step", status.Step)
-	}
+	return nil
+}
 
-	pruner := p.db.NewTriePruner()
-
-	if status.Cycles == 0 {
-		if _, _, err := p.archiveIndexTrie(pruner, 0, 0); err != nil {
-			return err
-		}
-		if _, _, _, _, err := p.archiveAccountTrie(pruner, 0, 0); err != nil {
-			return err
-		}
-	}
-
-	bestNum := func() uint32 {
-		return p.repo.BestBlock().Header().Number()
-	}
-
-	waitUntil := func(n uint32) error {
-		for {
-			if bestNum() > n {
-				return nil
-			}
-			select {
-			case <-p.ctx.Done():
-				return p.ctx.Err()
-			case <-time.After(time.Second):
-			}
-		}
-	}
-
+func (p *Pruner) waitUntil(n uint32) error {
 	for {
-		switch status.Step {
-		case stepInitiate:
-			// if err := pruner.SwitchLiveSpace(); err != nil {
-			// 	return err
-			// }
-			status.N1 = status.N2
-			status.N2 += 8192
-			// not necessary to prune if n2 is too small
-			// if status.N2 < thor.MaxStateHistory {
-			// 	status.N2 = thor.MaxStateHistory
-			// }
-			if err := waitUntil(status.N2 + 128); err != nil {
-				return err
-			}
-			log.Info("initiated", "range", fmt.Sprintf("[%v, %v]", status.N1, status.N2))
-			status.Step = stepArchiveIndexTrie
-		case stepArchiveIndexTrie:
-			log.Info("archiving index trie...")
-			nodeCount, entryCount, err := p.archiveIndexTrie(pruner, status.N1, status.N2)
-			if err != nil {
-				return err
-			}
-			log.Info("archived index trie", "nodes", nodeCount, "entries", entryCount)
-			status.Step = stepArchiveAccountTrie
-		case stepArchiveAccountTrie:
-			log.Info("archiving account trie...")
-			nodeCount, entryCount, sNodeCount, sEntryCount, err := p.archiveAccountTrie(pruner, status.N1, status.N2)
-			if err != nil {
-				return err
-			}
-			log.Info("archived account trie",
-				"nodes", nodeCount, "entries", entryCount,
-				"storageNodes", sNodeCount, "storageEntries", sEntryCount)
-			status.Step = stepDropStale
-		case stepDropStale:
-			if err := waitUntil(status.N2 + thor.MaxStateHistory + 128); err != nil {
-				return err
-			}
-			log.Info("sweeping stale nodes...")
-			count, err := pruner.DropStaleNodes(p.ctx, status.N2)
-			if err != nil {
-				return err
-			}
-			log.Info("swept stale nodes", "count", count)
-
-			status.Cycles++
-			status.Step = stepInitiate
-		default:
-			return fmt.Errorf("unexpected pruner step: %v", status.Step)
+		if p.repo.BestBlock().Header().Number() > n {
+			return nil
 		}
-
-		if err := status.Save(p.db); err != nil {
-			return err
+		select {
+		case <-p.ctx.Done():
+			return p.ctx.Err()
+		case <-time.After(time.Second):
 		}
 	}
 }
+
+func (p *Pruner) saveState(name string, n uint32) error {
+	data, _ := rlp.EncodeToBytes(&n)
+	return p.db.NewStore("pruner-state").Put([]byte(name), data)
+}
+
+func (p *Pruner) loadState(name string) (uint32, error) {
+	data, err := p.db.NewStore("pruner-state").Get([]byte(name))
+	if err != nil {
+		return 0, err
+	}
+	if len(data) == 0 {
+		return 0, nil
+	}
+	var n uint32
+	if err := rlp.DecodeBytes(data, &n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func pathToNum(path []byte) uint32 {
+	pathLen := len(path)
+	if pathLen > 15 {
+		pathLen = 15
+	}
+	var v = uint32(pathLen) << 28
+
+	for i := 0; i < len(path) && i < 7; i++ {
+		v |= (uint32(path[i]) << uint((6-i)*4))
+	}
+	return v
+}
+
+func (p *Pruner) pruneIndexTrie() error {
+	const stateName = "index-trie"
+	deleteCount := 0
+	go func() {
+		for {
+			<-time.After(15 * time.Second)
+			log.Info("=====pruneIndexTrie", "delete", deleteCount)
+		}
+	}()
+	n, _ := p.loadState(stateName)
+	for {
+		n += 1024
+		if err := p.waitUntil(n + 128); err != nil {
+			return err
+		}
+		id, err := p.repo.NewBestChain().GetBlockID(n)
+		if err != nil {
+			return err
+		}
+		sum, err := p.repo.GetBlockSummary(id)
+		if err != nil {
+			return err
+		}
+		tr := p.db.NewTrie(chain.IndexTrieName, sum.IndexRoot, n)
+		it := tr.NodeIterator(nil)
+
+		// path -> ver
+		m := make(map[uint32]uint32)
+		for it.Next(len(it.Path()) < 4) {
+			if !it.Hash().IsZero() {
+				m[pathToNum(it.Path())] = it.Ver()
+			}
+		}
+		if err := it.Error(); err != nil {
+			return err
+		}
+
+		bk := p.db.NewBucket([]byte(string(byte(0)) + chain.IndexTrieName))
+		rng := kv.Range{
+			Start: []byte{0},
+			Limit: []byte{0x50},
+		}
+		if err := bk.Batch(func(putter kv.PutFlusher) error {
+			var err error
+			bk.Iterate(rng, func(pair kv.Pair) bool {
+				v := binary.BigEndian.Uint32(pair.Key())
+				if ver, ok := m[v]; ok {
+					if binary.BigEndian.Uint32(pair.Key()[8:]) < ver {
+						err = putter.Delete(pair.Key())
+						deleteCount++
+					}
+				}
+				if deleteCount%1000 == 0 {
+					err = putter.Flush()
+				}
+				return err == nil
+			})
+			return err
+		}); err != nil {
+			return err
+		}
+		p.saveState(stateName, n)
+		select {
+		case <-p.ctx.Done():
+			return p.ctx.Err()
+		default:
+		}
+	}
+}
+
+// func (p *Pruner) loop() error {
+// 	var status status
+// 	if err := status.Load(p.db); err != nil {
+// 		return err
+// 	}
+// 	if status.Cycles == 0 && status.Step == stepInitiate {
+// 		log.Info("pruner started")
+// 	} else {
+// 		log.Info("pruner started", "range", fmt.Sprintf("[%v, %v]", status.N1, status.N2), "step", status.Step)
+// 	}
+
+// 	pruner := p.db.NewTriePruner()
+
+// 	if status.Cycles == 0 {
+// 		if _, _, err := p.archiveIndexTrie(pruner, 0, 0); err != nil {
+// 			return err
+// 		}
+// 		if _, _, _, _, err := p.archiveAccountTrie(pruner, 0, 0); err != nil {
+// 			return err
+// 		}
+// 	}
+
+// 	bestNum := func() uint32 {
+// 		return p.repo.BestBlock().Header().Number()
+// 	}
+
+// 	waitUntil := func(n uint32) error {
+// 		for {
+// 			if bestNum() > n {
+// 				return nil
+// 			}
+// 			select {
+// 			case <-p.ctx.Done():
+// 				return p.ctx.Err()
+// 			case <-time.After(time.Second):
+// 			}
+// 		}
+// 	}
+
+// 	for {
+// 		switch status.Step {
+// 		case stepInitiate:
+// 			// if err := pruner.SwitchLiveSpace(); err != nil {
+// 			// 	return err
+// 			// }
+// 			status.N1 = status.N2
+// 			status.N2 += 8192
+// 			// not necessary to prune if n2 is too small
+// 			// if status.N2 < thor.MaxStateHistory {
+// 			// 	status.N2 = thor.MaxStateHistory
+// 			// }
+// 			if err := waitUntil(status.N2 + 128); err != nil {
+// 				return err
+// 			}
+// 			log.Info("initiated", "range", fmt.Sprintf("[%v, %v]", status.N1, status.N2))
+// 			status.Step = stepArchiveIndexTrie
+// 		case stepArchiveIndexTrie:
+// 			log.Info("archiving index trie...")
+// 			nodeCount, entryCount, err := p.archiveIndexTrie(pruner, status.N1, status.N2)
+// 			if err != nil {
+// 				return err
+// 			}
+// 			log.Info("archived index trie", "nodes", nodeCount, "entries", entryCount)
+// 			status.Step = stepArchiveAccountTrie
+// 		case stepArchiveAccountTrie:
+// 			log.Info("archiving account trie...")
+// 			nodeCount, entryCount, sNodeCount, sEntryCount, err := p.archiveAccountTrie(pruner, status.N1, status.N2)
+// 			if err != nil {
+// 				return err
+// 			}
+// 			log.Info("archived account trie",
+// 				"nodes", nodeCount, "entries", entryCount,
+// 				"storageNodes", sNodeCount, "storageEntries", sEntryCount)
+// 			status.Step = stepDropStale
+// 		case stepDropStale:
+// 			if err := waitUntil(status.N2 + thor.MaxStateHistory + 128); err != nil {
+// 				return err
+// 			}
+// 			log.Info("sweeping stale nodes...")
+// 			count, err := pruner.DropStaleNodes(p.ctx, status.N2)
+// 			if err != nil {
+// 				return err
+// 			}
+// 			log.Info("swept stale nodes", "count", count)
+
+// 			status.Cycles++
+// 			status.Step = stepInitiate
+// 		default:
+// 			return fmt.Errorf("unexpected pruner step: %v", status.Step)
+// 		}
+
+// 		if err := status.Save(p.db); err != nil {
+// 			return err
+// 		}
+// 	}
+// }
 
 // func (p *Pruner) writeLeafCache(leafCache *muxdb.TrieLeafCache, trie1, trie2 *muxdb.Trie, handleLeaf func(key, blob1, extra1, blob2, extra2 []byte) error) error {
 // 	nameLen := len(trie1.Name())
@@ -296,115 +423,115 @@ func (p *Pruner) loop() error {
 // 	return it.Error()
 // }
 
-func (p *Pruner) archiveIndexTrie(pruner *muxdb.TriePruner, n1, n2 uint32) (nodeCount, entryCount int, err error) {
-	var (
-		bestChain              = p.repo.NewBestChain()
-		id1, id2, root1, root2 thor.Bytes32
-		s1, s2                 *chain.BlockSummary
-	)
+// func (p *Pruner) archiveIndexTrie(pruner *muxdb.TriePruner, n1, n2 uint32) (nodeCount, entryCount int, err error) {
+// 	var (
+// 		bestChain              = p.repo.NewBestChain()
+// 		id1, id2, root1, root2 thor.Bytes32
+// 		s1, s2                 *chain.BlockSummary
+// 	)
 
-	if id1, err = bestChain.GetBlockID(n1); err != nil {
-		return
-	}
-	if s1, err = p.repo.GetBlockSummary(id1); err != nil {
-		return
-	}
-	root1 = s1.IndexRoot
+// 	if id1, err = bestChain.GetBlockID(n1); err != nil {
+// 		return
+// 	}
+// 	if s1, err = p.repo.GetBlockSummary(id1); err != nil {
+// 		return
+// 	}
+// 	root1 = s1.IndexRoot
 
-	if id2, err = bestChain.GetBlockID(n2); err != nil {
-		return
-	}
-	if s2, err = p.repo.GetBlockSummary(id2); err != nil {
-		return
-	}
-	root2 = s2.IndexRoot
+// 	if id2, err = bestChain.GetBlockID(n2); err != nil {
+// 		return
+// 	}
+// 	if s2, err = p.repo.GetBlockSummary(id2); err != nil {
+// 		return
+// 	}
+// 	root2 = s2.IndexRoot
 
-	if n1 == 0 && n2 == 0 {
-		root1 = thor.Bytes32{}
-	}
-	t1 := p.db.NewTrie(chain.IndexTrieName, root1, n1)
-	t2 := p.db.NewTrie(chain.IndexTrieName, root2, n2)
-	nodeCount, entryCount, err = pruner.ArchiveNodes(p.ctx, t1, t2, nil)
-	return
-}
+// 	if n1 == 0 && n2 == 0 {
+// 		root1 = thor.Bytes32{}
+// 	}
+// 	t1 := p.db.NewTrie(chain.IndexTrieName, root1, n1)
+// 	t2 := p.db.NewTrie(chain.IndexTrieName, root2, n2)
+// 	nodeCount, entryCount, err = pruner.ArchiveNodes(p.ctx, t1, t2, nil)
+// 	return
+// }
 
-func (p *Pruner) archiveAccountTrie(pruner *muxdb.TriePruner, n1, n2 uint32) (nodeCount, entryCount, storageNodeCount, storageEntryCount int, err error) {
-	var (
-		bestChain        = p.repo.NewBestChain()
-		header1, header2 *block.Header
-		root1, root2     thor.Bytes32
-	)
+// func (p *Pruner) archiveAccountTrie(pruner *muxdb.TriePruner, n1, n2 uint32) (nodeCount, entryCount, storageNodeCount, storageEntryCount int, err error) {
+// 	var (
+// 		bestChain        = p.repo.NewBestChain()
+// 		header1, header2 *block.Header
+// 		root1, root2     thor.Bytes32
+// 	)
 
-	if header1, err = bestChain.GetBlockHeader(n1); err != nil {
-		return
-	}
-	if header2, err = bestChain.GetBlockHeader(n2); err != nil {
-		return
-	}
-	root1, root2 = header1.StateRoot(), header2.StateRoot()
-	if n1 == 0 && n2 == 0 {
-		root1 = thor.Bytes32{}
-	}
+// 	if header1, err = bestChain.GetBlockHeader(n1); err != nil {
+// 		return
+// 	}
+// 	if header2, err = bestChain.GetBlockHeader(n2); err != nil {
+// 		return
+// 	}
+// 	root1, root2 = header1.StateRoot(), header2.StateRoot()
+// 	if n1 == 0 && n2 == 0 {
+// 		root1 = thor.Bytes32{}
+// 	}
 
-	t1 := p.db.NewTrie(state.AccountTrieName, root1, n1)
-	t2 := p.db.NewTrie(state.AccountTrieName, root2, n2)
+// 	t1 := p.db.NewTrie(state.AccountTrieName, root1, n1)
+// 	t2 := p.db.NewTrie(state.AccountTrieName, root2, n2)
 
-	type sss struct {
-		n      string
-		r1, r2 thor.Bytes32
-		v1, v2 uint32
-	}
+// 	type sss struct {
+// 		n      string
+// 		r1, r2 thor.Bytes32
+// 		v1, v2 uint32
+// 	}
 
-	var ss []*sss
+// 	var ss []*sss
 
-	nodeCount, entryCount, err = pruner.ArchiveNodes(p.ctx, t1, t2, func(key, blob1, extra1, blob2, extra2 []byte) error {
-		var sRoot1, sRoot2 thor.Bytes32
-		var sv1, sv2 uint32
-		if len(blob1) > 0 {
-			var acc state.Account
-			if err := rlp.DecodeBytes(blob1, &acc); err != nil {
-				return err
-			}
-			sRoot1 = thor.BytesToBytes32(acc.StorageRoot)
-			if len(extra1) > 0 {
-				rlp.DecodeBytes(extra1, &sv1)
-			}
-		}
-		if len(blob2) > 0 {
-			var acc state.Account
-			if err := rlp.DecodeBytes(blob2, &acc); err != nil {
-				return err
-			}
-			sRoot2 = thor.BytesToBytes32(acc.StorageRoot)
-			if len(extra2) > 0 {
-				rlp.DecodeBytes(extra2, &sv2)
-			}
-		}
-		if !sRoot2.IsZero() {
-			ss = append(ss, &sss{
-				n:  state.StorageTrieName(thor.BytesToBytes32(key)),
-				r1: sRoot1,
-				r2: sRoot2,
-				v1: sv1,
-				v2: sv2,
-			})
-		}
-		// }
-		return nil
-	})
+// 	nodeCount, entryCount, err = pruner.ArchiveNodes(p.ctx, t1, t2, func(key, blob1, extra1, blob2, extra2 []byte) error {
+// 		var sRoot1, sRoot2 thor.Bytes32
+// 		var sv1, sv2 uint32
+// 		if len(blob1) > 0 {
+// 			var acc state.Account
+// 			if err := rlp.DecodeBytes(blob1, &acc); err != nil {
+// 				return err
+// 			}
+// 			sRoot1 = thor.BytesToBytes32(acc.StorageRoot)
+// 			if len(extra1) > 0 {
+// 				rlp.DecodeBytes(extra1, &sv1)
+// 			}
+// 		}
+// 		if len(blob2) > 0 {
+// 			var acc state.Account
+// 			if err := rlp.DecodeBytes(blob2, &acc); err != nil {
+// 				return err
+// 			}
+// 			sRoot2 = thor.BytesToBytes32(acc.StorageRoot)
+// 			if len(extra2) > 0 {
+// 				rlp.DecodeBytes(extra2, &sv2)
+// 			}
+// 		}
+// 		if !sRoot2.IsZero() {
+// 			ss = append(ss, &sss{
+// 				n:  state.StorageTrieName(thor.BytesToBytes32(key)),
+// 				r1: sRoot1,
+// 				r2: sRoot2,
+// 				v1: sv1,
+// 				v2: sv2,
+// 			})
+// 		}
+// 		// }
+// 		return nil
+// 	})
 
-	for _, s := range ss {
-		// fmt.Println(sRoot1, sv1)
-		// fmt.Println(sRoot2, sv2)
-		t1 := p.db.NewTrie(s.n, s.r1, s.v1)
-		t2 := p.db.NewTrie(s.n, s.r2, s.v2)
-		var n, e int
-		n, e, err = pruner.ArchiveNodes(p.ctx, t1, t2, nil)
-		if err != nil {
-			return
-		}
-		storageNodeCount += n
-		storageEntryCount += e
-	}
-	return
-}
+// 	for _, s := range ss {
+// 		// fmt.Println(sRoot1, sv1)
+// 		// fmt.Println(sRoot2, sv2)
+// 		t1 := p.db.NewTrie(s.n, s.r1, s.v1)
+// 		t2 := p.db.NewTrie(s.n, s.r2, s.v2)
+// 		var n, e int
+// 		n, e, err = pruner.ArchiveNodes(p.ctx, t1, t2, nil)
+// 		if err != nil {
+// 			return
+// 		}
+// 		storageNodeCount += n
+// 		storageEntryCount += e
+// 	}
+// 	return
+// }

@@ -27,8 +27,8 @@ const (
 // StorageTrieName returns the name of storage trie.
 //
 // Each storage trie has a unique name, which can improve IO performance.
-func StorageTrieName(addressHash thor.Bytes32) string {
-	return "s" + string(addressHash[:])
+func StorageTrieName(addr thor.Address) string {
+	return "s" + string(addr[:])
 }
 
 // Error is the error caused by state access failure.
@@ -345,7 +345,7 @@ func (s *State) BuildStorageTrie(addr thor.Address) (*muxdb.Trie, error) {
 
 	root := thor.BytesToBytes32(acc.StorageRoot)
 
-	trie := s.db.NewSecureTrie(StorageTrieName(thor.Blake2b(addr[:])), root, s.ver)
+	trie := s.db.NewSecureTrie(StorageTrieName(addr), root, s.ver)
 
 	// traverse journal to filter out storage changes for addr
 	s.sm.Journal(func(k, v interface{}) bool {
@@ -435,7 +435,7 @@ func (s *State) Stage() (*Stage, error) {
 		if !c.data.IsEmpty() {
 			if len(c.storage) > 0 {
 				storageTrie := s.db.NewSecureTrie(
-					StorageTrieName(thor.Blake2b(addr[:])),
+					StorageTrieName(addr),
 					thor.BytesToBytes32(c.data.StorageRoot),
 					c.data.storageVer)
 

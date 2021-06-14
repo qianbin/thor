@@ -12,9 +12,9 @@ import (
 // trieNodeKeyBuf buffer for trie node key composition.
 // A trie node key is composed by [space, ver, path, hash].
 // space - 1 byte
-// ver - 4 bytes
 // name - var len
 // path - 8 bytes
+// ver - 4 bytes
 // hash - 32 bytes
 type trieNodeKeyBuf []byte
 

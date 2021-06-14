@@ -37,7 +37,7 @@ func (co *cachedObject) getOrCreateStorageTrie() *muxdb.Trie {
 	}
 
 	trie := co.db.NewSecureTrie(
-		StorageTrieName(thor.Blake2b(co.addr[:])),
+		StorageTrieName(co.addr),
 		thor.BytesToBytes32(co.data.StorageRoot),
 		co.data.storageVer)
 
