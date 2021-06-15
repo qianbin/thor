@@ -47,7 +47,7 @@ func (p *TriePruner) ArchiveNodes(
 		for it.Next(true) {
 			if h := it.Hash(); !h.IsZero() {
 				keyBuf.SetParts(it.Ver(), it.Path(), h[:])
-				keyBuf.SetCold()
+				// keyBuf.SetCold()
 				err := it.Node(func(enc []byte) error {
 					return putter.Put(keyBuf[:], enc)
 				})

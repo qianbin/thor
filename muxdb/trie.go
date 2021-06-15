@@ -244,22 +244,25 @@ func (t *Trie) getEx(key *trie.CompositKey) (val trie.CompositValue, err error) 
 	// retrieve from cache
 	val = t.cache.Get(t.keyBuf[1:], len(key.Path), key.Scaning)
 	if len(val) == 0 {
-		// It's important to use snapshot here.
-		// Getting an encoded node from db may have at most 2 get ops. Snapshot
-		// can prevent parallel node deletions by trie pruner.
-		if err = t.store.Snapshot(func(getter kv.Getter) error {
-			t.keyBuf.SetHot()
-			val, err = getter.Get(t.keyBuf[:])
-			if err == nil {
-				return nil
-			}
-
-			t.keyBuf.SetCold()
-			val, err = getter.Get(t.keyBuf[:])
-			return err
-		}); err != nil {
+		if val, err = t.store.Get(t.keyBuf); err != nil {
 			return
 		}
+		// // It's important to use snapshot here.
+		// // Getting an encoded node from db may have at most 2 get ops. Snapshot
+		// // can prevent parallel node deletions by trie pruner.
+		// if err = t.store.Snapshot(func(getter kv.Getter) error {
+		// 	t.keyBuf.SetHot()
+		// 	val, err = getter.Get(t.keyBuf[:])
+		// 	if err == nil {
+		// 		return nil
+		// 	}
+
+		// 	t.keyBuf.SetCold()
+		// 	val, err = getter.Get(t.keyBuf[:])
+		// 	return err
+		// }); err != nil {
+		// 	return
+		// }
 		if !key.Scaning {
 			// skip caching when scaning(iterating) a trie, to prevent the cache from
 			// being over filled.
@@ -292,7 +295,7 @@ func (t *Trie) doCommit(putter kv.Putter, trieObj *trie.Trie, newBN uint32) (roo
 			t.keyBuf.SetParts(key.Ver, key.Path, key.Hash)
 
 			t.cache.Set(t.keyBuf[1:], val, len(key.Path))
-			t.keyBuf.SetHot()
+			// t.keyBuf.SetHot()
 			return putter.Put(t.keyBuf[:], val)
 		},
 	}, newBN)

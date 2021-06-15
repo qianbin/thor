@@ -240,8 +240,8 @@ func (p *Pruner) cleanTrie(tr *muxdb.Trie) (int, error) {
 	}
 	bk := p.db.NewBucket([]byte(string(byte(0)) + tr.Name()))
 	rng := kv.Range{
-		Start: []byte{0x00},
-		Limit: []byte{0x50},
+		// Start: []byte{0x00},
+		// Limit: []byte{0x50},
 	}
 
 	if err := bk.Batch(func(putter kv.PutFlusher) error {
