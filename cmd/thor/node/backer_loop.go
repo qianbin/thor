@@ -55,7 +55,7 @@ type draftWithSigner struct {
 }
 
 func newStatus(node *Node, parent *block.Block) (*status, error) {
-	state := node.stater.NewState(parent.Header().StateRoot())
+	state := node.stater.NewState(parent.Header().StateRoot(), parent.Header().Number())
 
 	authority := builtin.Authority.Native(state)
 	endorsement, err := builtin.Params.Native(state).Get(thor.KeyProposerEndorsement)

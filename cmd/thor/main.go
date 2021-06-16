@@ -127,6 +127,7 @@ func main() {
 }
 
 func defaultAction(ctx *cli.Context) error {
+	//	defer profile.Start(profile.NoShutdownHook).Stop()
 	exitSignal := handleExitSignal()
 
 	defer func() { log.Info("exited") }()
@@ -214,6 +215,7 @@ func defaultAction(ctx *cli.Context) error {
 	}
 
 	return node.New(
+		mainDB,
 		master,
 		repo,
 		state.NewStater(mainDB),

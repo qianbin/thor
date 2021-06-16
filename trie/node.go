@@ -29,7 +29,8 @@ var indices = []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b
 
 type node interface {
 	fstring(string) string
-	cache() (hashNode, bool)
+	cache() (*hashNode, bool)
+	version() uint32
 }
 
 type (
@@ -42,7 +43,10 @@ type (
 		Val   node
 		flags nodeFlag
 	}
-	hashNode  []byte
+	hashNode struct {
+		hash []byte
+		ver  uint32 // the version number of this node
+	}
 	valueNode []byte
 )
 
@@ -51,24 +55,45 @@ func (n *fullNode) EncodeRLP(w io.Writer) error {
 	return rlp.Encode(w, n.Children)
 }
 
+// EncodeRLP encodes a hash node into the consensus RLP format.
+func (n *hashNode) EncodeRLP(w io.Writer) error {
+	return rlp.Encode(w, n.hash)
+}
+
 func (n *fullNode) copy() *fullNode   { copy := *n; return &copy }
 func (n *shortNode) copy() *shortNode { copy := *n; return &copy }
 
 // nodeFlag contains caching-related metadata about a node.
 type nodeFlag struct {
-	hash  hashNode // cached hash of the node (may be nil)
-	dirty bool     // whether the node has changes that must be written to the database
+	hash  *hashNode // cached hash of the node (may be nil)
+	dirty bool      // whether the node has changes that must be written to the database
+	extra []byte    // extra bytes stored in Composit value
 }
 
-func (n *fullNode) cache() (hashNode, bool)  { return n.flags.hash, n.flags.dirty }
-func (n *shortNode) cache() (hashNode, bool) { return n.flags.hash, n.flags.dirty }
-func (n hashNode) cache() (hashNode, bool)   { return nil, true }
-func (n valueNode) cache() (hashNode, bool)  { return nil, true }
+func (n *fullNode) cache() (*hashNode, bool)  { return n.flags.hash, n.flags.dirty }
+func (n *shortNode) cache() (*hashNode, bool) { return n.flags.hash, n.flags.dirty }
+func (n *hashNode) cache() (*hashNode, bool)  { return nil, true }
+func (n valueNode) cache() (*hashNode, bool)  { return nil, true }
+
+func (n *fullNode) version() uint32 {
+	if n.flags.hash != nil {
+		return n.flags.hash.ver
+	}
+	return 0
+}
+func (n *shortNode) version() uint32 {
+	if n.flags.hash != nil {
+		return n.flags.hash.ver
+	}
+	return 0
+}
+func (n *hashNode) version() uint32 { return n.ver }
+func (n valueNode) version() uint32 { return 0 }
 
 // Pretty printing.
 func (n *fullNode) String() string  { return n.fstring("") }
 func (n *shortNode) String() string { return n.fstring("") }
-func (n hashNode) String() string   { return n.fstring("") }
+func (n *hashNode) String() string  { return n.fstring("") }
 func (n valueNode) String() string  { return n.fstring("") }
 
 func (n *fullNode) fstring(ind string) string {
@@ -85,15 +110,15 @@ func (n *fullNode) fstring(ind string) string {
 func (n *shortNode) fstring(ind string) string {
 	return fmt.Sprintf("{%x: %v} ", n.Key, n.Val.fstring(ind+"  "))
 }
-func (n hashNode) fstring(ind string) string {
-	return fmt.Sprintf("<%x> ", []byte(n))
+func (n *hashNode) fstring(ind string) string {
+	return fmt.Sprintf("<%x> ", n.hash)
 }
 func (n valueNode) fstring(ind string) string {
 	return fmt.Sprintf("%x ", []byte(n))
 }
 
-func mustDecodeNode(hash, buf []byte) node {
-	n, err := decodeNode(hash, buf)
+func mustDecodeNode(hash *hashNode, buf []byte, cVers []uint32) node {
+	n, err := decodeNode(hash, buf, cVers)
 	if err != nil {
 		panic(fmt.Sprintf("node %x: %v", hash, err))
 	}
@@ -101,7 +126,8 @@ func mustDecodeNode(hash, buf []byte) node {
 }
 
 // decodeNode parses the RLP encoding of a trie node.
-func decodeNode(hash, buf []byte) (node, error) {
+// cVers indicates child node versions.
+func decodeNode(hash *hashNode, buf []byte, cVers []uint32) (node, error) {
 	if len(buf) == 0 {
 		return nil, io.ErrUnexpectedEOF
 	}
@@ -111,17 +137,17 @@ func decodeNode(hash, buf []byte) (node, error) {
 	}
 	switch c, _ := rlp.CountValues(elems); c {
 	case 2:
-		n, err := decodeShort(hash, buf, elems)
+		n, err := decodeShort(hash, buf, elems, cVers)
 		return n, wrapError(err, "short")
 	case 17:
-		n, err := decodeFull(hash, buf, elems)
+		n, err := decodeFull(hash, buf, elems, cVers)
 		return n, wrapError(err, "full")
 	default:
 		return nil, fmt.Errorf("invalid number of list elements: %v", c)
 	}
 }
 
-func decodeShort(hash, buf, elems []byte) (node, error) {
+func decodeShort(hash *hashNode, buf, elems []byte, cVers []uint32) (*shortNode, error) {
 	kbuf, rest, err := rlp.SplitString(elems)
 	if err != nil {
 		return nil, err
@@ -136,17 +162,26 @@ func decodeShort(hash, buf, elems []byte) (node, error) {
 		}
 		return &shortNode{key, append(valueNode{}, val...), flag}, nil
 	}
-	r, _, err := decodeRef(rest)
+
+	var cVer uint32
+	if len(cVers) > 0 {
+		cVer = cVers[0]
+	}
+	r, _, err := decodeRef(rest, cVer)
 	if err != nil {
 		return nil, wrapError(err, "val")
 	}
 	return &shortNode{key, r, flag}, nil
 }
 
-func decodeFull(hash, buf, elems []byte) (*fullNode, error) {
+func decodeFull(hash *hashNode, buf, elems []byte, cVers []uint32) (*fullNode, error) {
 	n := &fullNode{flags: nodeFlag{hash: hash}}
 	for i := 0; i < 16; i++ {
-		cld, rest, err := decodeRef(elems)
+		var cVer uint32
+		if i < len(cVers) {
+			cVer = cVers[i]
+		}
+		cld, rest, err := decodeRef(elems, cVer)
 		if err != nil {
 			return n, wrapError(err, fmt.Sprintf("[%d]", i))
 		}
@@ -164,7 +199,7 @@ func decodeFull(hash, buf, elems []byte) (*fullNode, error) {
 
 const hashLen = len(common.Hash{})
 
-func decodeRef(buf []byte) (node, []byte, error) {
+func decodeRef(buf []byte, ver uint32) (node, []byte, error) {
 	kind, val, rest, err := rlp.Split(buf)
 	if err != nil {
 		return nil, buf, err
@@ -177,13 +212,13 @@ func decodeRef(buf []byte) (node, []byte, error) {
 			err := fmt.Errorf("oversized embedded node (size is %d bytes, want size < %d)", size, hashLen)
 			return nil, buf, err
 		}
-		n, err := decodeNode(nil, buf)
+		n, err := decodeNode(nil, buf, nil)
 		return n, rest, err
 	case kind == rlp.String && len(val) == 0:
 		// empty node
 		return nil, rest, nil
 	case kind == rlp.String && len(val) == 32:
-		return append(hashNode{}, val...), rest, nil
+		return &hashNode{append([]byte(nil), val...), ver}, rest, nil
 	default:
 		return nil, nil, fmt.Errorf("invalid RLP string size %d (want 0 or 32)", len(val))
 	}

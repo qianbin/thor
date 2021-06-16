@@ -6,11 +6,11 @@
 package muxdb
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 
-	"github.com/syndtr/goleveldb/leveldb/util"
 	"github.com/vechain/thor/kv"
-	"github.com/vechain/thor/thor"
 	"github.com/vechain/thor/trie"
 )
 
@@ -19,7 +19,7 @@ const (
 )
 
 // HandleTrieLeafFunc callback function to handle trie leaf.
-type HandleTrieLeafFunc func(key, blob1, blob2 []byte) error
+type HandleTrieLeafFunc func(key, blob1, extra1, blob2, extra2 []byte) error
 
 // TriePruner is the trie pruner.
 type TriePruner struct {
@@ -36,31 +36,25 @@ func newTriePruner(db *MuxDB) *TriePruner {
 // handleLeaf can be nil if not interested.
 func (p *TriePruner) ArchiveNodes(
 	ctx context.Context,
-	name string,
-	root1, root2 thor.Bytes32,
+	trie1, trie2 *Trie,
 	handleLeaf HandleTrieLeafFunc,
 ) (nodeCount int, entryCount int, err error) {
-	var (
-		trie1 = p.db.NewTrie(name, root1)
-		trie2 = p.db.NewTrie(name, root2)
-		it, _ = trie.NewDifferenceIterator(trie1.NodeIterator(nil), trie2.NodeIterator(nil))
-	)
+	ita, itb := trie1.NodeIterator(nil), trie2.NodeIterator(nil)
+	it, _ := trie.NewDifferenceIterator(ita, itb)
 
 	err = p.db.engine.Batch(func(putter kv.PutFlusher) error {
-		keyBuf := newTrieNodeKeyBuf(name)
+		keyBuf := newTrieNodeKeyBuf(trie1.Name())
 		for it.Next(true) {
 			if h := it.Hash(); !h.IsZero() {
-				enc, err := it.Node()
+				keyBuf.SetParts(it.Ver(), it.Path(), h[:])
+				// keyBuf.SetCold()
+				err := it.Node(func(enc []byte) error {
+					return putter.Put(keyBuf[:], enc)
+				})
 				if err != nil {
 					return err
 				}
-				nodeKey := &trie.NodeKey{
-					Hash: h[:],
-					Path: it.Path(),
-				}
-				if err := keyBuf.Put(putter.Put, nodeKey, enc, trieSpaceP); err != nil {
-					return err
-				}
+
 				nodeCount++
 				if nodeCount > 0 && nodeCount%prunerBatchSize == 0 {
 					if err := putter.Flush(); err != nil {
@@ -77,12 +71,19 @@ func (p *TriePruner) ArchiveNodes(
 			if it.Leaf() {
 				entryCount++
 				if handleLeaf != nil {
-					blob1, err := p.db.NewTrie(name, root1).Get(it.LeafKey())
-					if err != nil {
-						return err
+
+					var blob1, extra1 []byte
+					if ita.Leaf() && bytes.Equal(ita.Path(), itb.Path()) {
+						blob1 = ita.LeafBlob()
+						extra1 = ita.Extra()
 					}
+					// blob1, extra1, err := trie1.GetExtra(it.LeafKey())
+					// if err != nil {
+					// 	return err
+					// }
 					blob2 := it.LeafBlob()
-					if err := handleLeaf(it.LeafKey(), blob1, blob2); err != nil {
+					extra2 := it.Extra()
+					if err := handleLeaf(it.LeafKey(), blob1, extra1, blob2, extra2); err != nil {
 						return err
 					}
 				}
@@ -90,13 +91,22 @@ func (p *TriePruner) ArchiveNodes(
 		}
 		return it.Error()
 	})
+
 	return
 }
 
 // DropStaleNodes delete stale trie nodes.
-func (p *TriePruner) DropStaleNodes(ctx context.Context) (count int, err error) {
+func (p *TriePruner) DropStaleNodes(ctx context.Context, limitBlockNum uint32) (count int, err error) {
 	err = p.db.engine.Batch(func(putter kv.PutFlusher) error {
-		rng := kv.Range(*util.BytesPrefix([]byte{p.db.trieLiveSpace.Stale()}))
+		var limit [5]byte
+		limit[0] = trieHotSpace
+
+		binary.BigEndian.PutUint32(limit[1:], limitBlockNum)
+
+		rng := kv.Range{
+			Start: []byte{trieHotSpace},
+			Limit: limit[:],
+		}
 		var nextStart []byte
 		for {
 			iterCount := 0
@@ -132,9 +142,4 @@ func (p *TriePruner) DropStaleNodes(ctx context.Context) (count int, err error) 
 		return nil
 	})
 	return
-}
-
-// SwitchLiveSpace switch trie live space.
-func (p *TriePruner) SwitchLiveSpace() error {
-	return p.db.trieLiveSpace.Switch()
 }

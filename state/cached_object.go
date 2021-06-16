@@ -27,7 +27,7 @@ type cachedObject struct {
 	}
 }
 
-func newCachedObject(db *muxdb.MuxDB, addr thor.Address, data *Account) *cachedObject {
+func newCachedObject(db *muxdb.MuxDB, addr thor.Address, data *Account, ver uint32) *cachedObject {
 	return &cachedObject{db: db, addr: addr, data: *data}
 }
 
@@ -37,8 +37,9 @@ func (co *cachedObject) getOrCreateStorageTrie() *muxdb.Trie {
 	}
 
 	trie := co.db.NewSecureTrie(
-		StorageTrieName(thor.Blake2b(co.addr[:])),
-		thor.BytesToBytes32(co.data.StorageRoot))
+		StorageTrieName(co.addr),
+		thor.BytesToBytes32(co.data.StorageRoot),
+		co.data.storageVer)
 
 	co.cache.storageTrie = trie
 	return trie

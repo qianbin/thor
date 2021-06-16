@@ -17,6 +17,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/event"
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/inconshreveable/log15"
 	"github.com/pkg/errors"
 	"github.com/syndtr/goleveldb/leveldb"
@@ -28,7 +29,9 @@ import (
 	"github.com/vechain/thor/co"
 	"github.com/vechain/thor/comm"
 	"github.com/vechain/thor/consensus"
+	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/logdb"
+	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/packer"
 	"github.com/vechain/thor/poa"
 	"github.com/vechain/thor/state"
@@ -40,11 +43,11 @@ import (
 var log = log15.New("pkg", "node")
 
 type Node struct {
-	goes     co.Goes
-	packer   *packer.Packer
-	cons     *consensus.Consensus
-	consLock sync.Mutex
-
+	goes           co.Goes
+	packer         *packer.Packer
+	cons           *consensus.Consensus
+	consLock       sync.Mutex
+	db             *muxdb.MuxDB
 	master         *Master
 	repo           *chain.Repository
 	logDB          *logdb.LogDB
@@ -62,6 +65,7 @@ type Node struct {
 }
 
 func New(
+	db *muxdb.MuxDB,
 	master *Master,
 	repo *chain.Repository,
 	stater *state.Stater,
@@ -74,6 +78,7 @@ func New(
 	forkConfig thor.ForkConfig,
 ) *Node {
 	return &Node{
+		db:             db,
 		packer:         packer.New(repo, stater, master.Address(), master.Beneficiary, forkConfig),
 		cons:           consensus.New(repo, stater, forkConfig),
 		master:         master,
@@ -299,7 +304,28 @@ func (n *Node) commitBlock(stage *state.Stage, newBlock *block.Block, receipts t
 	n.commitLock.Lock()
 	defer n.commitLock.Unlock()
 
-	if _, err := stage.Commit(); err != nil {
+	id := newBlock.Header().ID()
+	if _, err := stage.Commit(func(tr *muxdb.Trie) error {
+		ss := n.db.NewBucket([]byte(string(muxdb.TrieJournalSpace) + string(id[:]) + tr.Name()))
+		return ss.Batch(func(put kv.PutFlusher) error {
+			for _, i := range tr.Journal() {
+				if len(i.V) > 0 {
+					enc, _ := rlp.EncodeToBytes([]interface{}{
+						i.V,
+						i.Extra,
+					})
+					if err := put.Put(i.K, enc); err != nil {
+						return err
+					}
+				} else {
+					if err := put.Put(i.K, nil); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		})
+	}); err != nil {
 		return nil, nil, errors.Wrap(err, "commit state")
 	}
 	if err := n.repo.AddBlock(newBlock, receipts); err != nil {

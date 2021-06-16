@@ -13,22 +13,29 @@ import (
 
 // individual functions of trie.DatabaseXXXEx interface.
 type (
-	getEncodedFunc func(key *trie.NodeKey) ([]byte, error)
-	getDecodedFunc func(key *trie.NodeKey) (interface{}, func(interface{}))
-	putEncodedFunc func(key *trie.NodeKey, enc []byte) error
+	getExFunc     func(key *trie.CompositKey) (trie.CompositValue, error)
+	putExFunc     func(key *trie.CompositKey, val trie.CompositValue) error
+	directGetFunc func(key []byte, nodeVer uint32) ([]byte, []byte, bool, error)
 )
 
-func (f getEncodedFunc) GetEncoded(key *trie.NodeKey) ([]byte, error)                  { return f(key) }
-func (f getDecodedFunc) GetDecoded(key *trie.NodeKey) (interface{}, func(interface{})) { return f(key) }
-func (f putEncodedFunc) PutEncoded(key *trie.NodeKey, enc []byte) error                { return f(key, enc) }
+func (f getExFunc) GetEx(key *trie.CompositKey) (trie.CompositValue, error) { return f(key) }
+func (f putExFunc) PutEx(key *trie.CompositKey, val trie.CompositValue) error {
+	return f(key, val)
+}
+
+func (f directGetFunc) DirectGet(key []byte, nodeVer uint32) ([]byte, []byte, bool, error) {
+	return f(key, nodeVer)
+}
 
 var (
-	_ trie.DatabaseReaderEx = (*struct {
-		getEncodedFunc
-		getDecodedFunc
-	})(nil)
-	_ trie.DatabaseWriterEx = putEncodedFunc(nil)
+	_ trie.DatabaseReaderEx = getExFunc(nil)
+	_ trie.DatabaseWriterEx = putExFunc(nil)
+	_ trie.DirectReader     = directGetFunc(nil)
 )
+
+type TrieJournalItem struct {
+	K, V, Extra []byte
+}
 
 // Trie is the managed trie.
 type Trie struct {
@@ -38,10 +45,11 @@ type Trie struct {
 	cache        *trieCache
 	keyBuf       trieNodeKeyBuf
 	secure       bool
-	liveSpace    *trieLiveSpace
 	lazyInit     func() (*trie.Trie, error)
 	secureKeys   map[thor.Bytes32][]byte
-	permanent    bool
+	leafCache    *TrieLeafCache
+	bn           uint32
+	journal      []*TrieJournalItem
 }
 
 func newTrie(
@@ -50,8 +58,8 @@ func newTrie(
 	root thor.Bytes32,
 	cache *trieCache,
 	secure bool,
-	liveSpace *trieLiveSpace,
-	permanent bool,
+	bn uint32,
+	leafCache *TrieLeafCache,
 ) *Trie {
 	var (
 		tr = &Trie{
@@ -61,8 +69,8 @@ func newTrie(
 			cache:        cache,
 			keyBuf:       newTrieNodeKeyBuf(name),
 			secure:       secure,
-			liveSpace:    liveSpace,
-			permanent:    permanent,
+			leafCache:    leafCache,
+			bn:           bn,
 		}
 		trieObj *trie.Trie // the real trie object
 		initErr error
@@ -70,25 +78,35 @@ func newTrie(
 
 	tr.lazyInit = func() (*trie.Trie, error) {
 		if trieObj == nil && initErr == nil {
-			trieObj, initErr = trie.New(root, &struct {
+			trieObj, initErr = trie.NewVersioned(root, &struct {
 				trie.Database
-				getEncodedFunc
-				getDecodedFunc
+				getExFunc
+				directGetFunc
 			}{
 				nil, // leave out trie.Database, since here provides trie.DatabaseReaderEx impl
-				tr.getEncoded,
-				tr.getDecoded,
-			})
+				tr.getEx,
+				tr.directGet,
+			}, bn)
 		}
 		return trieObj, initErr
 	}
 	return tr
 }
 
-// Name returns trie name.
-// Tries with different names have different key spaces.
+func (t *Trie) directGet(key []byte, nodeVer uint32) ([]byte, []byte, bool, error) {
+	if t.leafCache != nil {
+		key = append([]byte(t.name), key...)
+		return t.leafCache.Get(t.bn, nodeVer, key)
+	}
+	return nil, nil, false, nil
+}
+
 func (t *Trie) Name() string {
 	return t.name
+}
+
+func (t *Trie) Journal() []*TrieJournalItem {
+	return t.journal
 }
 
 // Get returns the value for key stored in the trie.
@@ -99,6 +117,14 @@ func (t *Trie) Get(key []byte) ([]byte, error) {
 		return nil, err
 	}
 	return obj.TryGet(t.hashKey(key, false))
+}
+
+func (t *Trie) GetExtra(key []byte) ([]byte, []byte, error) {
+	obj, err := t.lazyInit()
+	if err != nil {
+		return nil, nil, err
+	}
+	return obj.TryGetExtra(t.hashKey(key, false))
 }
 
 // Update associates key with value in the trie. Subsequent calls to
@@ -112,7 +138,27 @@ func (t *Trie) Update(key, val []byte) error {
 	if err != nil {
 		return err
 	}
-	return obj.TryUpdate(t.hashKey(key, true), val)
+	k := t.hashKey(key, true)
+	t.journal = append(t.journal, &TrieJournalItem{
+		append([]byte(nil), k...),
+		append([]byte(nil), val...),
+		nil,
+	})
+	return obj.TryUpdate(k, val)
+}
+
+func (t *Trie) UpdateExtra(key, val, extra []byte) error {
+	obj, err := t.lazyInit()
+	if err != nil {
+		return err
+	}
+	k := t.hashKey(key, true)
+	t.journal = append(t.journal, &TrieJournalItem{
+		append([]byte(nil), k...),
+		append([]byte(nil), val...),
+		append([]byte(nil), extra...),
+	})
+	return obj.TryUpdateExtra(k, val, extra)
 }
 
 // Hash returns the root hash of the trie.
@@ -127,31 +173,28 @@ func (t *Trie) Hash() thor.Bytes32 {
 }
 
 // Commit writes all nodes to the trie's database.
-func (t *Trie) Commit() (thor.Bytes32, error) {
-	return t.commit(t.permanent)
+func (t *Trie) Commit() (root thor.Bytes32, err error) {
+	return t.commit(t.bn + 1)
 }
 
-// CommitPermanently writes all nodes directly into permanent space.
-// All nodes committed in this way can not be pruned. It's for test purpose only.
-func (t *Trie) CommitPermanently() (thor.Bytes32, error) {
-	return t.commit(true)
+func (t *Trie) CommitVer(newBN uint32) (root thor.Bytes32, err error) {
+	return t.commit(newBN)
 }
 
-func (t *Trie) commit(permanent bool) (root thor.Bytes32, err error) {
+func (t *Trie) commit(newBN uint32) (root thor.Bytes32, err error) {
 	obj, err := t.lazyInit()
 	if err != nil {
 		return
 	}
 
-	space := trieSpaceP
-	if !permanent {
-		space = t.liveSpace.Active()
-	}
-
 	err = t.store.Batch(func(putter kv.PutFlusher) error {
-		root, err = t.doCommit(putter, obj, space)
+		root, err = t.doCommit(putter, obj, newBN)
 		return err
 	})
+	if err == nil {
+		t.bn = newBN
+		t.journal = nil
+	}
 	return
 }
 
@@ -195,43 +238,41 @@ func (t *Trie) hashKey(key []byte, save bool) []byte {
 	return h[:]
 }
 
-func (t *Trie) getEncoded(key *trie.NodeKey) (enc []byte, err error) {
+func (t *Trie) getEx(key *trie.CompositKey) (val trie.CompositValue, err error) {
+	t.keyBuf.SetParts(key.Ver, key.Path, key.Hash)
+
 	// retrieve from cache
-	enc = t.cache.GetEncoded(key.Hash, len(key.Path), key.Scaning)
-	if len(enc) > 0 {
-		return
-	}
+	val = t.cache.Get(t.keyBuf[1:], len(key.Path), key.Scaning)
+	if len(val) == 0 {
+		if val, err = t.store.Get(t.keyBuf); err != nil {
+			return
+		}
+		// // It's important to use snapshot here.
+		// // Getting an encoded node from db may have at most 2 get ops. Snapshot
+		// // can prevent parallel node deletions by trie pruner.
+		// if err = t.store.Snapshot(func(getter kv.Getter) error {
+		// 	t.keyBuf.SetHot()
+		// 	val, err = getter.Get(t.keyBuf[:])
+		// 	if err == nil {
+		// 		return nil
+		// 	}
 
-	// It's important to use snapshot here.
-	// Getting an encoded node from db may have at most 3 get ops. Snapshot
-	// can prevent parallel node deletions by trie pruner.
-	if err = t.store.Snapshot(func(getter kv.Getter) error {
-		enc, err = t.keyBuf.Get(getter.Get, key)
-		return err
-	}); err != nil {
-		return
-	}
-
-	// skip caching when scaning(iterating) a trie, to prevent the cache from
-	// being over filled.
-	if !key.Scaning {
-		t.cache.SetEncoded(key.Hash, enc, len(key.Path))
+		// 	t.keyBuf.SetCold()
+		// 	val, err = getter.Get(t.keyBuf[:])
+		// 	return err
+		// }); err != nil {
+		// 	return
+		// }
+		if !key.Scaning {
+			// skip caching when scaning(iterating) a trie, to prevent the cache from
+			// being over filled.
+			t.cache.Set(t.keyBuf[1:], val, len(key.Path))
+		}
 	}
 	return
 }
 
-func (t *Trie) getDecoded(key *trie.NodeKey) (interface{}, func(interface{})) {
-	if cached := t.cache.GetDecoded(key.Hash, len(key.Path), key.Scaning); cached != nil {
-		return cached, nil
-	}
-	if !key.Scaning {
-		// fill cache only if not iterating
-		return nil, func(dec interface{}) { t.cache.SetDecoded(key.Hash, dec, len(key.Path)) }
-	}
-	return nil, nil
-}
-
-func (t *Trie) doCommit(putter kv.Putter, trieObj *trie.Trie, space byte) (root thor.Bytes32, err error) {
+func (t *Trie) doCommit(putter kv.Putter, trieObj *trie.Trie, newBN uint32) (root thor.Bytes32, err error) {
 	// save secure key preimages
 	if len(t.secureKeys) > 0 {
 		buf := [1 + 32]byte{trieSecureKeySpace}
@@ -244,17 +285,20 @@ func (t *Trie) doCommit(putter kv.Putter, trieObj *trie.Trie, space byte) (root 
 		t.secureKeys = nil
 	}
 
-	return trieObj.CommitTo(&struct {
+	return trieObj.CommitVersionedTo(&struct {
 		trie.DatabaseWriter
-		putEncodedFunc
+		putExFunc
 	}{
 		nil, // leave out trie.DatabaseWriter, because here provides trie.DatabaseWriterEx
 		// implements trie.DatabaseWriterEx.PutEncoded
-		func(key *trie.NodeKey, enc []byte) error {
-			t.cache.SetEncoded(key.Hash, enc, len(key.Path))
-			return t.keyBuf.Put(putter.Put, key, enc, space)
+		func(key *trie.CompositKey, val trie.CompositValue) error {
+			t.keyBuf.SetParts(key.Ver, key.Path, key.Hash)
+
+			t.cache.Set(t.keyBuf[1:], val, len(key.Path))
+			// t.keyBuf.SetHot()
+			return putter.Put(t.keyBuf[:], val)
 		},
-	})
+	}, newBN)
 }
 
 // errorIterator an iterator always in error state.
@@ -262,13 +306,17 @@ type errorIterator struct {
 	err error
 }
 
-func (i *errorIterator) Next(bool) bool        { return false }
-func (i *errorIterator) Error() error          { return i.err }
-func (i *errorIterator) Hash() thor.Bytes32    { return thor.Bytes32{} }
-func (i *errorIterator) Node() ([]byte, error) { return nil, i.err }
-func (i *errorIterator) Parent() thor.Bytes32  { return thor.Bytes32{} }
-func (i *errorIterator) Path() []byte          { return nil }
-func (i *errorIterator) Leaf() bool            { return false }
-func (i *errorIterator) LeafKey() []byte       { return nil }
-func (i *errorIterator) LeafBlob() []byte      { return nil }
-func (i *errorIterator) LeafProof() [][]byte   { return nil }
+func (i *errorIterator) Next(bool) bool                { return false }
+func (i *errorIterator) Error() error                  { return i.err }
+func (i *errorIterator) Hash() thor.Bytes32            { return thor.Bytes32{} }
+func (i *errorIterator) Node(func([]byte) error) error { return i.err }
+func (i *errorIterator) Extra() []byte                 { return nil }
+func (i *errorIterator) Ver() uint32                   { return 0 }
+func (i *errorIterator) Branch() bool                  { return false }
+func (i *errorIterator) ChildVer(index int) uint32     { return 0 }
+func (i *errorIterator) Parent() thor.Bytes32          { return thor.Bytes32{} }
+func (i *errorIterator) Path() []byte                  { return nil }
+func (i *errorIterator) Leaf() bool                    { return false }
+func (i *errorIterator) LeafKey() []byte               { return nil }
+func (i *errorIterator) LeafBlob() []byte              { return nil }
+func (i *errorIterator) LeafProof() [][]byte           { return nil }

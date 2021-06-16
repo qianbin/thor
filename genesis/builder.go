@@ -8,8 +8,10 @@ package genesis
 import (
 	"math"
 
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/pkg/errors"
 	"github.com/vechain/thor/block"
+	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/muxdb"
 	"github.com/vechain/thor/runtime"
 	"github.com/vechain/thor/state"
@@ -84,7 +86,7 @@ func (b *Builder) ComputeID() (thor.Bytes32, error) {
 
 // Build build genesis block according to presets.
 func (b *Builder) Build(stater *state.Stater) (blk *block.Block, events tx.Events, transfers tx.Transfers, err error) {
-	state := stater.NewState(thor.Bytes32{})
+	state := stater.NewState(thor.Bytes32{}, math.MaxUint32)
 
 	for _, proc := range b.stateProcs {
 		if err := proc(state); err != nil {
@@ -120,19 +122,41 @@ func (b *Builder) Build(stater *state.Stater) (blk *block.Block, events tx.Event
 	if err != nil {
 		return nil, nil, nil, errors.Wrap(err, "stage")
 	}
-	stateRoot, err := stage.Commit()
-	if err != nil {
-		return nil, nil, nil, errors.Wrap(err, "commit state")
-	}
+	root := stage.Hash()
 
 	parentID := thor.Bytes32{0xff, 0xff, 0xff, 0xff} //so, genesis number is 0
 	copy(parentID[4:], b.extraData[:])
 
-	return new(block.Builder).
+	genesisBlock := new(block.Builder).
 		ParentID(parentID).
 		Timestamp(b.timestamp).
 		GasLimit(b.gasLimit).
-		StateRoot(stateRoot).
+		StateRoot(root).
 		ReceiptsRoot(tx.Transactions(nil).RootHash()).
-		Build(), events, transfers, nil
+		Build()
+
+	if _, err := stage.Commit(func(tr *muxdb.Trie) error {
+		ss := stater.DB().NewBucket([]byte(string(muxdb.TrieJournalSpace) + string(genesisBlock.Header().ID().Bytes()) + tr.Name()))
+		return ss.Batch(func(put kv.PutFlusher) error {
+			for _, i := range tr.Journal() {
+				if len(i.V) > 0 {
+					enc, _ := rlp.EncodeToBytes([]interface{}{
+						i.V,
+						i.Extra,
+					})
+					if err := put.Put(i.K, enc); err != nil {
+						return err
+					}
+				} else {
+					if err := put.Put(i.K, nil); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		})
+	}); err != nil {
+		return nil, nil, nil, errors.Wrap(err, "commit state")
+	}
+	return genesisBlock, events, transfers, nil
 }

@@ -28,8 +28,13 @@ import (
 type MissingNodeError struct {
 	NodeHash thor.Bytes32 // hash of the missing node
 	Path     []byte       // hex-encoded path to the missing node
+	Err      error
 }
 
 func (err *MissingNodeError) Error() string {
-	return fmt.Sprintf("missing trie node %v (path %x)", err.NodeHash, err.Path)
+	var errMsg string
+	if err.Err != nil {
+		errMsg = err.Err.Error()
+	}
+	return fmt.Sprintf("missing trie node %v (path %x) %v", err.NodeHash, err.Path, errMsg)
 }
