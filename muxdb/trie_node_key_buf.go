@@ -29,23 +29,51 @@ func (b trieNodeKeyBuf) SetParts(ver uint32, path, hash []byte) {
 	binary.BigEndian.PutUint32(b[len(b)-32-4:], ver)
 	compactPath(b[len(b)-32-4-8:], path)
 	copy(b[len(b)-32:], hash)
+	if len(path) > 5 {
+		b[0] = trieColdSpace
+	} else {
+		b[0] = trieHotSpace
+	}
 }
 
 func compactPath(dest, path []byte) {
-	pathLen := len(path)
-	if pathLen > 15 {
-		pathLen = 15
+	n := len(path)
+	if n > 15 {
+		n = 15
 	}
-	dest[0] = byte(pathLen) << 4
+
+	var v uint64
 	for i := 0; i < 15; i++ {
-		x := byte(0)
-		if i < len(path) {
-			x = path[i]
+		if i < n {
+			v |= uint64(path[i])
 		}
-		if i%2 == 0 {
-			dest[(i+1)/2] |= x
-		} else {
-			dest[(i+1)/2] = (x << 4)
-		}
+		v <<= 4
 	}
+	// term with path len
+	v |= uint64(n)
+
+	for i := 0; i < 8; i++ {
+		dest[i] = 0
+	}
+
+	binary.BigEndian.PutUint64(dest, v)
 }
+
+// func compactPath(dest, path []byte) {
+// 	pathLen := len(path)
+// 	if pathLen > 15 {
+// 		pathLen = 15
+// 	}
+// 	dest[0] = byte(pathLen) << 4
+// 	for i := 0; i < 15; i++ {
+// 		x := byte(0)
+// 		if i < len(path) {
+// 			x = path[i]
+// 		}
+// 		if i%2 == 0 {
+// 			dest[(i+1)/2] |= x
+// 		} else {
+// 			dest[(i+1)/2] = (x << 4)
+// 		}
+// 	}
+// }
