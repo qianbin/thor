@@ -230,9 +230,25 @@ func (p *Pruner) cleanTrie(tr *muxdb.Trie) (int, error) {
 	)
 
 	it := tr.NodeIterator(nil)
-	for it.Next(len(it.Path()) < 4) {
-		if !it.Hash().IsZero() && len(it.Path()) <= 4 {
-			m[pathToNum(it.Path())] = it.Ver()
+
+	skipChild := false
+	for it.Next(!skipChild) {
+		if it.Branch() {
+			ver := it.Ver()
+			if len(it.Path()) == 0 && ver > 0 {
+				m[pathToNum(it.Path())] = ver
+			}
+			if ver > 0 {
+				for i := 0; i < 16; i++ {
+					cv := it.ChildVer(i)
+					if cv > 0 {
+						m[pathToNum(append(it.Path(), byte(i)))] = cv
+					}
+				}
+			}
+			skipChild = ver == 0 || len(it.Path()) >= 4
+		} else {
+			skipChild = true
 		}
 	}
 	if err := it.Error(); err != nil {
@@ -240,8 +256,8 @@ func (p *Pruner) cleanTrie(tr *muxdb.Trie) (int, error) {
 	}
 	bk := p.db.NewBucket([]byte(string(byte(0)) + tr.Name()))
 	rng := kv.Range{
-		// Start: []byte{0x00},
-		// Limit: []byte{0x50},
+		Start: []byte{0x00},
+		Limit: []byte{0x60},
 	}
 
 	if err := bk.Batch(func(putter kv.PutFlusher) error {
@@ -278,7 +294,17 @@ func (p *Pruner) pruneIndexTrie() error {
 	}()
 
 	for {
-		n += 1024
+		var target uint32
+		bn := p.repo.BestBlock()
+		if bn.Header().Number() > 128 {
+			target = bn.Header().Number() - 128
+		}
+		if n+1024 < target {
+			n = target
+		} else {
+			n += 1024
+		}
+
 		if err := p.waitUntil(n + 128); err != nil {
 			return err
 		}

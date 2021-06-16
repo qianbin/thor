@@ -26,19 +26,9 @@ func newTrieNodeKeyBuf(name string) trieNodeKeyBuf {
 }
 
 func (b trieNodeKeyBuf) SetParts(ver uint32, path, hash []byte) {
-
-	if len(path) < 5 {
-		b[0] = trieHotSpace
-		binary.BigEndian.PutUint32(b[len(b)-32-4:], ver)
-		compactPath(b[len(b)-32-4-8:], path)
-		copy(b[len(b)-32:], hash)
-
-	} else {
-		b[0] = trieColdSpace
-		binary.BigEndian.PutUint32(b[len(b)-32-8-4:], ver)
-		compactPath(b[len(b)-32-8:], path)
-		copy(b[len(b)-32:], hash)
-	}
+	binary.BigEndian.PutUint32(b[len(b)-32-4:], ver)
+	compactPath(b[len(b)-32-4-8:], path)
+	copy(b[len(b)-32:], hash)
 }
 
 func compactPath(dest, path []byte) {

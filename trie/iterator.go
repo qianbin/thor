@@ -84,6 +84,9 @@ type NodeIterator interface {
 
 	Extra() []byte
 
+	Branch() bool
+	ChildVer(index int) uint32
+
 	// Parent returns the hash of the parent of the current node. The hash may be the one
 	// grandparent if the immediate parent is an internal node with no hash.
 	Parent() thor.Bytes32
@@ -195,6 +198,26 @@ func (it *nodeIterator) Node(cb func([]byte) error) (err error) {
 		h.tmp.Write(n.flags.extra)
 	}
 	return cb(h.tmp)
+}
+func (it *nodeIterator) Branch() bool {
+	if len(it.stack) == 0 {
+		return false
+	}
+	_, ok := it.stack[len(it.stack)-1].node.(*fullNode)
+	return ok
+}
+
+func (it *nodeIterator) ChildVer(index int) uint32 {
+	if len(it.stack) == 0 {
+		return 0
+	}
+	if n, ok := it.stack[len(it.stack)-1].node.(*fullNode); ok {
+		c := n.Children[index]
+		if c != nil {
+			return c.version()
+		}
+	}
+	return 0
 }
 
 func (it *nodeIterator) Ver() uint32 {
@@ -515,6 +538,14 @@ func (it *differenceIterator) Node(cb func([]byte) error) error {
 	return it.b.Node(cb)
 }
 
+func (it *differenceIterator) Branch() bool {
+	return it.b.Branch()
+}
+
+func (it *differenceIterator) ChildVer(index int) uint32 {
+	return it.b.ChildVer(index)
+}
+
 func (it *differenceIterator) Ver() uint32 {
 	return it.b.Ver()
 }
@@ -632,6 +663,14 @@ func (it *unionIterator) Hash() thor.Bytes32 {
 
 func (it *unionIterator) Node(cb func([]byte) error) error {
 	return (*it.items)[0].Node(cb)
+}
+
+func (it *unionIterator) Branch() bool {
+	return (*it.items)[0].Branch()
+}
+
+func (it *unionIterator) ChildVer(index int) uint32 {
+	return (*it.items)[0].ChildVer(index)
 }
 
 func (it *unionIterator) Ver() uint32 {
