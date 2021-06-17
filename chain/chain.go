@@ -294,7 +294,7 @@ func (r *Repository) indexBlock(parentIndexRoot thor.Bytes32, block *block.Block
 	}
 
 	ss := r.db.NewBucket([]byte(string(muxdb.TrieJournalSpace) + string(id[:]) + IndexTrieName))
-	if err := ss.Batch(func(put kv.PutFlusher) error {
+	if err := ss.Batch(func(put kv.Putter) error {
 		for _, i := range trie.Journal() {
 			if len(i.V) > 0 {
 				enc, _ := rlp.EncodeToBytes([]interface{}{

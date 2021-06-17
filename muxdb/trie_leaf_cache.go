@@ -85,7 +85,7 @@ func (c *TrieLeafCache) Flush(ver uint32) error {
 		return err
 	}
 
-	err := c.disk.Batch(func(putter kv.PutFlusher) error {
+	err := c.disk.Batch(func(putter kv.Putter) error {
 		n := 0
 		for k, v := range c.wMem {
 			k := []byte(k)
@@ -100,11 +100,6 @@ func (c *TrieLeafCache) Flush(ver uint32) error {
 			}
 			c.cache.Set(k, v, 8*3600)
 			n++
-			if n%1000 == 0 {
-				if err := putter.Flush(); err != nil {
-					return err
-				}
-			}
 		}
 		return nil
 	})

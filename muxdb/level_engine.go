@@ -72,35 +72,38 @@ func (ldb *levelEngine) Snapshot(fn func(kv.Getter) error) error {
 	})
 }
 
-func (ldb *levelEngine) Batch(fn func(kv.PutFlusher) error) error {
+func (ldb *levelEngine) Batch(fn func(kv.Putter) error) error {
 	batch := &leveldb.Batch{}
+	size := 0
 
-	if err := fn(&struct {
-		kv.PutFunc
-		kv.DeleteFunc
-		kv.FlushFunc
-	}{
-		func(key, val []byte) error {
-			batch.Put(key, val)
-			return nil
-		},
-		func(key []byte) error {
-			batch.Delete(key)
-			return nil
-		},
-		func() error {
-			if batch.Len() == 0 {
-				return nil
-			}
+	flushIfNeeded := func() error {
+		if size >= 4096 {
 			if err := ldb.db.Write(batch, &writeOpt); err != nil {
 				return err
 			}
 			batch.Reset()
-			return nil
+		}
+		return nil
+	}
+
+	if err := fn(&struct {
+		kv.PutFunc
+		kv.DeleteFunc
+	}{
+		func(key, val []byte) error {
+			batch.Put(key, val)
+			size += len(key) + len(val)
+			return flushIfNeeded()
+		},
+		func(key []byte) error {
+			batch.Delete(key)
+			size += len(key)
+			return flushIfNeeded()
 		},
 	}); err != nil {
 		return err
 	}
+
 	if batch.Len() == 0 {
 		return nil
 	}

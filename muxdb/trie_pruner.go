@@ -42,7 +42,7 @@ func (p *TriePruner) ArchiveNodes(
 	ita, itb := trie1.NodeIterator(nil), trie2.NodeIterator(nil)
 	it, _ := trie.NewDifferenceIterator(ita, itb)
 
-	err = p.db.engine.Batch(func(putter kv.PutFlusher) error {
+	err = p.db.engine.Batch(func(putter kv.Putter) error {
 		keyBuf := newTrieNodeKeyBuf(trie1.Name())
 		for it.Next(true) {
 			if h := it.Hash(); !h.IsZero() {
@@ -57,9 +57,6 @@ func (p *TriePruner) ArchiveNodes(
 
 				nodeCount++
 				if nodeCount > 0 && nodeCount%prunerBatchSize == 0 {
-					if err := putter.Flush(); err != nil {
-						return err
-					}
 					select {
 					case <-ctx.Done():
 						return ctx.Err()
@@ -96,7 +93,7 @@ func (p *TriePruner) ArchiveNodes(
 
 // DropStaleNodes delete stale trie nodes.
 func (p *TriePruner) DropStaleNodes(ctx context.Context, limitBlockNum uint32) (count int, err error) {
-	err = p.db.engine.Batch(func(putter kv.PutFlusher) error {
+	err = p.db.engine.Batch(func(putter kv.Putter) error {
 		var limit [5]byte
 		limit[0] = trieHotSpace
 
@@ -127,9 +124,7 @@ func (p *TriePruner) DropStaleNodes(ctx context.Context, limitBlockNum uint32) (
 				break
 			}
 			count += iterCount
-			if err := putter.Flush(); err != nil {
-				return err
-			}
+
 			rng.Start = nextStart
 
 			select {

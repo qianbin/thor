@@ -7,12 +7,27 @@ package thor
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
+func x(v uint64) uint64 {
+	if v == 0 {
+		return 0
+	}
+	f := uint64(0x0f)
+	l := v & f
+	s := (64 - l*4)
+	if v&(f<<s) == f<<s {
+		v--
+	}
+	return v + (uint64(1) << s)
+}
 func TestBytes32(t *testing.T) {
+	fmt.Printf("%x\n", x(0xf000000000000001))
+	return
 	bytes32 := BytesToBytes32([]byte("bytes32"))
 	data, _ := json.Marshal(&bytes32)
 	assert.Equal(t, "\""+bytes32.String()+"\"", string(data))

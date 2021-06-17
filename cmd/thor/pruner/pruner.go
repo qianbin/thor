@@ -145,16 +145,12 @@ func (p *Pruner) xx() error {
 			v += step
 			if err = j.Iterate(rng, func(pair kv.Pair) bool {
 				i := 0
-				err = j.Batch(func(p kv.PutFlusher) error {
+				err = j.Batch(func(p kv.Putter) error {
 					if err := p.Delete(pair.Key()); err != nil {
 						return err
 					}
 					i++
-					if i%500 == 0 {
-						if err := p.Flush(); err != nil {
-							return err
-						}
-					}
+
 					return nil
 				})
 				return true
@@ -209,21 +205,20 @@ func (p *Pruner) loadState(name string, val interface{}) error {
 	return rlp.DecodeBytes(data, val)
 }
 
-func pathToNum(path []byte) uint64 {
+func compactPath(path []byte) uint64 {
 	n := len(path)
 	if n > 15 {
 		n = 15
 	}
 
 	var v uint64
-	v = uint64(n)
 	for i := 0; i < 15; i++ {
-		v <<= 4
 		if i < n {
 			v |= uint64(path[i])
 		}
+		v <<= 4
 	}
-	return v
+	return v | uint64(n)
 }
 
 func (p *Pruner) cleanTrie(tr *muxdb.Trie, lastVer uint32) (int, error) {
@@ -244,13 +239,16 @@ func (p *Pruner) cleanTrie(tr *muxdb.Trie, lastVer uint32) (int, error) {
 					m[0] = ver
 				}
 				for i := 0; i < 16; i++ {
-					cv := it.ChildVer(i)
+					cv, _ := it.ChildVer(i)
+					// if empty {
+					// 	m[compactPath(append(it.Path(), byte(i)))] = math.MaxUint32
+					// } else
 					if cv > lastVer {
-						m[pathToNum(append(it.Path(), byte(i)))] = cv
+						m[compactPath(append(it.Path(), byte(i)))] = cv
 					}
 				}
 			}
-			skipChild = ver <= lastVer || len(it.Path()) >= 4
+			skipChild = ver <= lastVer || len(it.Path()) >= 14
 		} else {
 			skipChild = true
 		}
@@ -259,31 +257,80 @@ func (p *Pruner) cleanTrie(tr *muxdb.Trie, lastVer uint32) (int, error) {
 		return 0, err
 	}
 	bk := p.db.NewBucket([]byte(string(byte(0)) + tr.Name()))
-	rng := kv.Range{
-		// Start: []byte{0x00},
-		// Limit: []byte{0x60},
+	// rng := kv.Range{
+	// 	// Start: []byte{0x00},
+	// 	// Limit: []byte{0x60},
+	// }
+
+	// if err := bk.Batch(func(putter kv.Putter) error {
+	// 	var err error
+	// 	bk.Iterate(rng, func(pair kv.Pair) bool {
+	// 		k := binary.BigEndian.Uint64(pair.Key())
+	// 		if ver, ok := m[k]; ok {
+	// 			if binary.BigEndian.Uint32(pair.Key()[8:]) < ver {
+	// 				err = putter.Delete(pair.Key())
+	// 				deleteCount++
+	// 			}
+	// 		}
+
+	// 		return err == nil
+	// 	})
+	// 	return err
+	// }); err != nil {
+	// 	return 0, err
+	// }
+
+	bk.Batch(func(putter kv.Putter) error {
+		var buf [8]byte
+		rng := kv.Range{
+			Start: buf[:],
+			// Limit: []byte{0x60},
+		}
+		v := uint64(0)
+		var err error
+		for {
+			binary.BigEndian.PutUint64(buf[:], v)
+			bk.Iterate(rng, func(pair kv.Pair) bool {
+				v = binary.BigEndian.Uint64(pair.Key())
+				if ver, ok := m[v]; ok {
+					if binary.BigEndian.Uint32(pair.Key()[8:]) < ver {
+						err = putter.Delete(pair.Key())
+						deleteCount++
+					}
+				} else {
+					return false
+				}
+				return err == nil
+			})
+
+			v = x(v)
+
+			if v == 0 {
+				break
+			}
+		}
+		return nil
+	})
+	return deleteCount, nil
+}
+
+func x(v uint64) uint64 {
+	if v == 0 {
+		return 0
 	}
 
-	if err := bk.Batch(func(putter kv.PutFlusher) error {
-		var err error
-		bk.Iterate(rng, func(pair kv.Pair) bool {
-			k := binary.BigEndian.Uint64(pair.Key())
-			if ver, ok := m[k]; ok {
-				if binary.BigEndian.Uint32(pair.Key()[8:]) < ver {
-					err = putter.Delete(pair.Key())
-					deleteCount++
-				}
-			}
-			if deleteCount%1000 == 0 {
-				err = putter.Flush()
-			}
-			return err == nil
-		})
-		return err
-	}); err != nil {
-		return 0, err
+	f := uint64(0x0f)
+	l := v & f
+	s := (64 - l*4)
+	y := v - l
+	if y != 0 && (y+(uint64(1)<<s)) == 0 {
+		return 0
 	}
-	return deleteCount, nil
+	if v&(f<<s) == f<<s {
+		v--
+	}
+
+	return v + (uint64(1) << s)
 }
 
 func (p *Pruner) pruneIndexTrie() error {

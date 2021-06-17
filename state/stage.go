@@ -30,7 +30,7 @@ func (s *Stage) Commit(handleTries func(*muxdb.Trie) error) (thor.Bytes32, error
 	codeStore := s.db.NewStore(codeStoreName)
 
 	// write codes
-	if err := codeStore.Batch(func(w kv.PutFlusher) error {
+	if err := codeStore.Batch(func(w kv.Putter) error {
 		for hash, code := range s.codes {
 			if err := w.Put(hash[:], code); err != nil {
 				return &Error{err}

@@ -187,7 +187,7 @@ func (t *Trie) commit(newBN uint32) (root thor.Bytes32, err error) {
 		return
 	}
 
-	err = t.store.Batch(func(putter kv.PutFlusher) error {
+	err = t.store.Batch(func(putter kv.Putter) error {
 		root, err = t.doCommit(putter, obj, newBN)
 		return err
 	})
@@ -306,17 +306,17 @@ type errorIterator struct {
 	err error
 }
 
-func (i *errorIterator) Next(bool) bool                { return false }
-func (i *errorIterator) Error() error                  { return i.err }
-func (i *errorIterator) Hash() thor.Bytes32            { return thor.Bytes32{} }
-func (i *errorIterator) Node(func([]byte) error) error { return i.err }
-func (i *errorIterator) Extra() []byte                 { return nil }
-func (i *errorIterator) Ver() uint32                   { return 0 }
-func (i *errorIterator) Branch() bool                  { return false }
-func (i *errorIterator) ChildVer(index int) uint32     { return 0 }
-func (i *errorIterator) Parent() thor.Bytes32          { return thor.Bytes32{} }
-func (i *errorIterator) Path() []byte                  { return nil }
-func (i *errorIterator) Leaf() bool                    { return false }
-func (i *errorIterator) LeafKey() []byte               { return nil }
-func (i *errorIterator) LeafBlob() []byte              { return nil }
-func (i *errorIterator) LeafProof() [][]byte           { return nil }
+func (i *errorIterator) Next(bool) bool                    { return false }
+func (i *errorIterator) Error() error                      { return i.err }
+func (i *errorIterator) Hash() thor.Bytes32                { return thor.Bytes32{} }
+func (i *errorIterator) Node(func([]byte) error) error     { return i.err }
+func (i *errorIterator) Extra() []byte                     { return nil }
+func (i *errorIterator) Ver() uint32                       { return 0 }
+func (i *errorIterator) Branch() bool                      { return false }
+func (i *errorIterator) ChildVer(index int) (uint32, bool) { return 0, false }
+func (i *errorIterator) Parent() thor.Bytes32              { return thor.Bytes32{} }
+func (i *errorIterator) Path() []byte                      { return nil }
+func (i *errorIterator) Leaf() bool                        { return false }
+func (i *errorIterator) LeafKey() []byte                   { return nil }
+func (i *errorIterator) LeafBlob() []byte                  { return nil }
+func (i *errorIterator) LeafProof() [][]byte               { return nil }

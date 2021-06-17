@@ -137,7 +137,7 @@ func (b *Builder) Build(stater *state.Stater) (blk *block.Block, events tx.Event
 
 	if _, err := stage.Commit(func(tr *muxdb.Trie) error {
 		ss := stater.DB().NewBucket([]byte(string(muxdb.TrieJournalSpace) + string(genesisBlock.Header().ID().Bytes()) + tr.Name()))
-		return ss.Batch(func(put kv.PutFlusher) error {
+		return ss.Batch(func(put kv.Putter) error {
 			for _, i := range tr.Journal() {
 				if len(i.V) > 0 {
 					enc, _ := rlp.EncodeToBytes([]interface{}{

@@ -85,7 +85,7 @@ type NodeIterator interface {
 	Extra() []byte
 
 	Branch() bool
-	ChildVer(index int) uint32
+	ChildVer(index int) (uint32, bool)
 
 	// Parent returns the hash of the parent of the current node. The hash may be the one
 	// grandparent if the immediate parent is an internal node with no hash.
@@ -207,17 +207,17 @@ func (it *nodeIterator) Branch() bool {
 	return ok
 }
 
-func (it *nodeIterator) ChildVer(index int) uint32 {
+func (it *nodeIterator) ChildVer(index int) (uint32, bool) {
 	if len(it.stack) == 0 {
-		return 0
+		return 0, false
 	}
 	if n, ok := it.stack[len(it.stack)-1].node.(*fullNode); ok {
 		c := n.Children[index]
 		if c != nil {
-			return c.version()
+			return c.version(), true
 		}
 	}
-	return 0
+	return 0, false
 }
 
 func (it *nodeIterator) Ver() uint32 {
@@ -542,7 +542,7 @@ func (it *differenceIterator) Branch() bool {
 	return it.b.Branch()
 }
 
-func (it *differenceIterator) ChildVer(index int) uint32 {
+func (it *differenceIterator) ChildVer(index int) (uint32, bool) {
 	return it.b.ChildVer(index)
 }
 
@@ -669,7 +669,7 @@ func (it *unionIterator) Branch() bool {
 	return (*it.items)[0].Branch()
 }
 
-func (it *unionIterator) ChildVer(index int) uint32 {
+func (it *unionIterator) ChildVer(index int) (uint32, bool) {
 	return (*it.items)[0].ChildVer(index)
 }
 

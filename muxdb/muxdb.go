@@ -212,15 +212,9 @@ func (db *MuxDB) NewBucket(b []byte) kv.Store {
 				return fn(bkt.ProxyGetter(getter))
 			})
 		},
-		func(fn func(kv.PutFlusher) error) error {
-			return src.Batch(func(putter kv.PutFlusher) error {
-				return fn(struct {
-					kv.Putter
-					kv.FlushFunc
-				}{
-					bkt.ProxyPutter(putter),
-					putter.Flush,
-				})
+		func(fn func(kv.Putter) error) error {
+			return src.Batch(func(putter kv.Putter) error {
+				return fn(bkt.ProxyPutter(putter))
 			})
 		},
 		func(r kv.Range, fn func(kv.Pair) bool) error {

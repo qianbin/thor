@@ -328,7 +328,7 @@ func (n *Node) commitBlock(stage *state.Stage, newBlock *block.Block, receipts t
 	id := newBlock.Header().ID()
 	if _, err := stage.Commit(func(tr *muxdb.Trie) error {
 		ss := n.db.NewBucket([]byte(string(muxdb.TrieJournalSpace) + string(id[:]) + tr.Name()))
-		return ss.Batch(func(put kv.PutFlusher) error {
+		return ss.Batch(func(put kv.Putter) error {
 			for _, i := range tr.Journal() {
 				if len(i.V) > 0 {
 					enc, _ := rlp.EncodeToBytes([]interface{}{

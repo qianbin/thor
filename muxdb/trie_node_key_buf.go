@@ -27,30 +27,29 @@ func newTrieNodeKeyBuf(name string) trieNodeKeyBuf {
 
 func (b trieNodeKeyBuf) SetParts(ver uint32, path, hash []byte) {
 	binary.BigEndian.PutUint32(b[len(b)-32-4:], ver)
-	compactPath(b[len(b)-32-4-8:], path)
+	binary.BigEndian.PutUint64(b[len(b)-32-4-8:], compactPath(path))
 	copy(b[len(b)-32:], hash)
-	if len(path) > 5 {
+	if len(path) > 15 {
 		b[0] = trieColdSpace
 	} else {
 		b[0] = trieHotSpace
 	}
 }
 
-func compactPath(dest, path []byte) {
+func compactPath(path []byte) uint64 {
 	n := len(path)
 	if n > 15 {
 		n = 15
 	}
 
 	var v uint64
-	v = uint64(n)
 	for i := 0; i < 15; i++ {
-		v <<= 4
 		if i < n {
 			v |= uint64(path[i])
 		}
+		v <<= 4
 	}
-	binary.BigEndian.PutUint64(dest, v)
+	return v | uint64(n)
 }
 
 // func compactPath(dest, path []byte) {
