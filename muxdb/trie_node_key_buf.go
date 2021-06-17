@@ -43,19 +43,13 @@ func compactPath(dest, path []byte) {
 	}
 
 	var v uint64
+	v = uint64(n)
 	for i := 0; i < 15; i++ {
+		v <<= 4
 		if i < n {
 			v |= uint64(path[i])
 		}
-		v <<= 4
 	}
-	// term with path len
-	v |= uint64(n)
-
-	for i := 0; i < 8; i++ {
-		dest[i] = 0
-	}
-
 	binary.BigEndian.PutUint64(dest, v)
 }
 

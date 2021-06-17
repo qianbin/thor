@@ -216,18 +216,17 @@ func pathToNum(path []byte) uint64 {
 	}
 
 	var v uint64
+	v = uint64(n)
 	for i := 0; i < 15; i++ {
+		v <<= 4
 		if i < n {
 			v |= uint64(path[i])
 		}
-		v <<= 4
 	}
-	// term with path len
-	v |= uint64(n)
 	return v
 }
 
-func (p *Pruner) cleanTrie(tr *muxdb.Trie) (int, error) {
+func (p *Pruner) cleanTrie(tr *muxdb.Trie, lastVer uint32) (int, error) {
 	var (
 		// path -> ver
 		m           = make(map[uint64]uint32)
@@ -240,18 +239,18 @@ func (p *Pruner) cleanTrie(tr *muxdb.Trie) (int, error) {
 	for it.Next(!skipChild) {
 		if it.Branch() {
 			ver := it.Ver()
-			if len(it.Path()) == 0 && ver > 0 {
-				m[pathToNum(it.Path())] = ver
-			}
-			if ver > 0 {
+			if ver > lastVer {
+				if len(it.Path()) == 0 {
+					m[0] = ver
+				}
 				for i := 0; i < 16; i++ {
 					cv := it.ChildVer(i)
-					if cv > 0 {
+					if cv > lastVer {
 						m[pathToNum(append(it.Path(), byte(i)))] = cv
 					}
 				}
 			}
-			skipChild = ver == 0 || len(it.Path()) >= 4
+			skipChild = ver <= lastVer || len(it.Path()) >= 4
 		} else {
 			skipChild = true
 		}
@@ -304,16 +303,14 @@ func (p *Pruner) pruneIndexTrie() error {
 		if bn.Header().Number() > 128 {
 			target = bn.Header().Number() - 128
 		}
-		if n+1024 < target {
-			n = target
-		} else {
-			n += 1024
+		if n+1024 > target {
+			target = n + 1024
 		}
 
-		if err := p.waitUntil(n + 128); err != nil {
+		if err := p.waitUntil(target + 128); err != nil {
 			return err
 		}
-		id, err := p.repo.NewBestChain().GetBlockID(n)
+		id, err := p.repo.NewBestChain().GetBlockID(target)
 		if err != nil {
 			return err
 		}
@@ -321,11 +318,12 @@ func (p *Pruner) pruneIndexTrie() error {
 		if err != nil {
 			return err
 		}
-		dn, err := p.cleanTrie(p.db.NewTrie(chain.IndexTrieName, sum.IndexRoot, n))
+		dn, err := p.cleanTrie(p.db.NewTrie(chain.IndexTrieName, sum.IndexRoot, sum.Header.Number()), n)
 		if err != nil {
 			return err
 		}
 		deleteCount += dn
+		n = target
 		p.saveState(chain.IndexTrieName, n)
 		select {
 		case <-p.ctx.Done():
@@ -355,25 +353,26 @@ func (p *Pruner) pruneAccTrie() error {
 		if bn.Header().Number() > thor.MaxStateHistory+128 {
 			target = bn.Header().Number() - thor.MaxStateHistory - 128
 		}
-		if n+1024 < target {
-			n = target
-		} else {
-			n += 1024
+		if n+1024 > target {
+			target = n + 1024
 		}
-		if err := p.waitUntil(n + thor.MaxStateHistory + 128); err != nil {
+
+		if err := p.waitUntil(target + thor.MaxStateHistory + 128); err != nil {
 			return err
 		}
 
-		header, err := p.repo.NewBestChain().GetBlockHeader(n)
+		header, err := p.repo.NewBestChain().GetBlockHeader(target)
 		if err != nil {
 			return err
 		}
 
-		dn, err := p.cleanTrie(p.db.NewTrie(state.AccountTrieName, header.StateRoot(), header.Number()))
+		dn, err := p.cleanTrie(p.db.NewTrie(state.AccountTrieName, header.StateRoot(), header.Number()), n)
 		if err != nil {
 			return err
 		}
 		deleteCount += dn
+		lastN := n
+		n = target
 		p.saveState(state.AccountTrieName, n)
 		//
 		p.iterateStorage(sAddr, func(addr thor.Address) error {
@@ -400,7 +399,7 @@ func (p *Pruner) pruneAccTrie() error {
 				}
 				if ver > n-1024 {
 					str := p.db.NewTrie(state.StorageTrieName(addr), thor.BytesToBytes32(acc.StorageRoot), ver)
-					dn, err := p.cleanTrie(str)
+					dn, err := p.cleanTrie(str, lastN)
 					if err != nil {
 						return err
 					}
