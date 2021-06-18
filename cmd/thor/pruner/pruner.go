@@ -295,19 +295,21 @@ func (p *Pruner) cleanTrie(tr *muxdb.Trie, lastVer uint32) (int, error) {
 			v := uint64(0)
 			var err error
 			for {
-				binary.BigEndian.PutUint64(buf[:], v)
-				bk.Iterate(rng, func(pair kv.Pair) bool {
-					v = binary.BigEndian.Uint64(pair.Key())
-					if ver, ok := m[v]; ok {
-						if binary.BigEndian.Uint32(pair.Key()[8:]) < ver {
-							err = putter.Delete(pair.Key())
-							deleteCount++
+				if _, ok := m[v]; ok {
+					binary.BigEndian.PutUint64(buf[:], v)
+					bk.Iterate(rng, func(pair kv.Pair) bool {
+						v = binary.BigEndian.Uint64(pair.Key())
+						if ver, ok := m[v]; ok {
+							if binary.BigEndian.Uint32(pair.Key()[8:]) < ver {
+								err = putter.Delete(pair.Key())
+								deleteCount++
+							}
+						} else {
+							return false
 						}
-					} else {
-						return false
-					}
-					return err == nil
-				})
+						return err == nil
+					})
+				}
 
 				v = x(v)
 
