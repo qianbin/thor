@@ -15,7 +15,6 @@ import (
 	"github.com/syndtr/goleveldb/leveldb/filter"
 	"github.com/syndtr/goleveldb/leveldb/opt"
 	"github.com/syndtr/goleveldb/leveldb/storage"
-	"github.com/syndtr/goleveldb/leveldb/util"
 	"github.com/vechain/thor/kv"
 	"github.com/vechain/thor/thor"
 )
@@ -71,11 +70,11 @@ func Open(path string, options *Options) (*MuxDB, error) {
 		DisableSeeksCompaction: true,
 		// CompactionTableSize:    opt.MiB * 32,
 		CompactionTableSizeMultiplier: 2,
-		VibrantKeys: []*util.Range{
-			util.BytesPrefix([]byte{trieHotSpace}),
-			util.BytesPrefix([]byte{trieSecureKeySpace}),
-			util.BytesPrefix([]byte{TrieJournalSpace}),
-		},
+		// VibrantKeys: []*util.Range{
+		// 	util.BytesPrefix([]byte{trieHotSpace}),
+		// 	util.BytesPrefix([]byte{trieSecureKeySpace}),
+		// 	util.BytesPrefix([]byte{TrieJournalSpace}),
+		// },
 	}
 
 	storage, err := openLevelFileStorage(path, false, options.DisablePageCache)
