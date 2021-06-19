@@ -354,13 +354,13 @@ func (p *Pruner) pruneIndexTrie() error {
 	}()
 
 	for {
-		var target uint32
 		bn := p.repo.BestBlock()
-		if bn.Header().Number() > 128 {
-			target = bn.Header().Number() - 128
-		}
-		if n+1024 > target {
-			target = n + 1024
+		target := bn.Header().Number()
+
+		if target < n+512 {
+			target = n + 512
+		} else if target > n+8192 {
+			target = n + 8192
 		}
 
 		if err := p.waitUntil(target + 128); err != nil {
@@ -404,13 +404,13 @@ func (p *Pruner) pruneAccTrie() error {
 	}()
 
 	for {
-		var target uint32
 		bn := p.repo.BestBlock()
-		if bn.Header().Number() > thor.MaxStateHistory+128 {
-			target = bn.Header().Number() - thor.MaxStateHistory - 128
-		}
-		if n+1024 > target {
-			target = n + 1024
+		target := bn.Header().Number()
+
+		if target < n+512 {
+			target = n + 512
+		} else if target > n+8192 {
+			target = n + 8192
 		}
 
 		if err := p.waitUntil(target + thor.MaxStateHistory + 128); err != nil {
