@@ -160,6 +160,102 @@ func defaultAction(ctx *cli.Context) error {
 	if err != nil {
 		return err
 	}
+	// n := 0
+	// size := 0
+
+	// bn := repo.BestBlock()
+	// sum, _ := repo.GetBlockSummary(bn.Header().ID())
+	// tr := mainDB.NewTrie(chain.IndexTrieName, sum.IndexRoot, bn.Header().Number())
+
+	// it := tr.NodeIterator(nil)
+	// n = 0
+	// size = 0
+	// for it.Next(true) {
+	// 	if !it.Hash().IsZero() {
+	// 		n++
+	// 		it.Node(func(b []byte) error {
+	// 			size += len(b)
+	// 			return nil
+	// 		})
+	// 	}
+	// }
+	// fmt.Println("index nodes", n, size)
+
+	// ss := mainDB.NewBucket([]byte{0, 'i'})
+	// n = 0
+	// size = 0
+	// m := make(map[uint64]int)
+	// da, _ := mainDB.NewStore("pruner-state").Get([]byte("i"))
+	// fmt.Println(da)
+	// var a uint32
+	// rlp.DecodeBytes(da, &a)
+	// fmt.Println(a)
+	// ss.Iterate(kv.Range{}, func(p kv.Pair) bool {
+	// 	x := int(binary.BigEndian.Uint64(p.Key()) & 0xf)
+	// 	// if x == 1 {
+	// 	// 	if binary.BigEndian.Uint32(p.Key()[8:]) < 9404452 {
+	// 	// 		fmt.Printf("%x", p.Key()[:8])
+	// 	// 	}
+	// 	// }
+	// 	v := binary.BigEndian.Uint32(p.Key()[8:])
+	// 	if x == 1 && v < a {
+	// 		e := binary.BigEndian.Uint64(p.Key())
+	// 		i := m[e]
+	// 		m[e] = i + 1
+	// 	}
+
+	// 	return true
+	// })
+	// for k, v := range m {
+	// 	fmt.Printf("%x,%v\n", k, v)
+	// }
+	// fmt.Println(m)
+	// fmt.Println("index nodes(it)", n, size)
+
+	// ss = mainDB.NewBucket([]byte{1, 'i'})
+	// n = 0
+	// size = 0
+	// ss.Iterate(kv.Range{}, func(p kv.Pair) bool {
+	// 	n++
+	// 	size += len(p.Value())
+	// 	return true
+	// })
+	// fmt.Println("index nodes(it 15+)", n, size)
+
+	// id, _ := repo.NewBestChain().GetBlockID(9404459)
+	// sum, _ := repo.GetBlockSummary(id)
+
+	// tr := mainDB.NewTrie(chain.IndexTrieName, sum.IndexRoot, 9404459)
+	// it := tr.NodeIterator(nil)
+	// skipChild := false
+	// lastVer := uint32(9404452)
+
+	// compactPath := func(path []byte) uint64 {
+	// 	n := len(path)
+	// 	if n > 15 {
+	// 		n = 15
+	// 	}
+
+	// 	var v uint64
+	// 	for i := 0; i < 15; i++ {
+	// 		if i < n {
+	// 			v |= uint64(path[i])
+	// 		}
+	// 		v <<= 4
+	// 	}
+	// 	return v | uint64(n)
+	// }
+	// _ = compactPath
+	// for it.Next(!skipChild) {
+	// 	ver := it.Ver()
+	// 	skipChild = ver <= lastVer || len(it.Path()) >= 15
+	// 	if ver > lastVer && len(it.Path()) <= 15 {
+	// 		fmt.Printf("%x\n", it.Path())
+	// 		// m[compactPath(it.Path())] = ver
+	// 	}
+	// }
+
+	// return nil
 
 	master, err := loadNodeMaster(ctx)
 	if err != nil {
