@@ -85,7 +85,9 @@ type NodeIterator interface {
 	Extra() []byte
 
 	Branch() bool
+	Short() bool
 	ChildVer(index int) (uint32, bool)
+	ShortKey() []byte
 
 	// Parent returns the hash of the parent of the current node. The hash may be the one
 	// grandparent if the immediate parent is an internal node with no hash.
@@ -205,6 +207,21 @@ func (it *nodeIterator) Branch() bool {
 	}
 	_, ok := it.stack[len(it.stack)-1].node.(*fullNode)
 	return ok
+}
+func (it *nodeIterator) Short() bool {
+	if len(it.stack) == 0 {
+		return false
+	}
+	_, ok := it.stack[len(it.stack)-1].node.(*shortNode)
+	return ok
+}
+
+func (it *nodeIterator) ShortKey() []byte {
+	if len(it.stack) == 0 {
+		return nil
+	}
+	short := it.stack[len(it.stack)-1].node.(*shortNode)
+	return short.Key
 }
 
 func (it *nodeIterator) ChildVer(index int) (uint32, bool) {
@@ -533,6 +550,12 @@ func NewDifferenceIterator(a, b NodeIterator) (NodeIterator, *int) {
 func (it *differenceIterator) Hash() thor.Bytes32 {
 	return it.b.Hash()
 }
+func (it *differenceIterator) Short() bool {
+	return it.b.Short()
+}
+func (it *differenceIterator) ShortKey() []byte {
+	return it.b.ShortKey()
+}
 
 func (it *differenceIterator) Node(cb func([]byte) error) error {
 	return it.b.Node(cb)
@@ -655,6 +678,12 @@ func NewUnionIterator(iters []NodeIterator) (NodeIterator, *int) {
 
 	ui := &unionIterator{items: &h}
 	return ui, &ui.count
+}
+func (it *unionIterator) Short() bool {
+	return (*it.items)[0].Short()
+}
+func (it *unionIterator) ShortKey() []byte {
+	return (*it.items)[0].ShortKey()
 }
 
 func (it *unionIterator) Hash() thor.Bytes32 {

@@ -237,6 +237,12 @@ func (p *Pruner) cleanTrie(tr *muxdb.Trie, lastVer uint32) (int, error) {
 		if ver >= lastVer && len(it.Path()) <= 15 {
 			m[compactPath(it.Path())] = ver
 		}
+		if it.Short() {
+			sk := it.ShortKey()
+			for i := 1; i < len(sk) && i < 15-len(it.Path()); i++ {
+				m[compactPath(append(it.Path(), sk[:i]...))] = ver
+			}
+		}
 		// if it.Branch() {
 		// 	ver := it.Ver()
 		// 	if ver > lastVer {

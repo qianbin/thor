@@ -165,13 +165,17 @@ func defaultAction(ctx *cli.Context) error {
 
 	// bn := repo.BestBlock()
 	// sum, _ := repo.GetBlockSummary(bn.Header().ID())
-	// tr := mainDB.NewTrie(chain.IndexTrieName, sum.IndexRoot, bn.Header().Number())
+	// tr := mainDB.NewTrie(state.AccountTrieName, sum.Header.StateRoot(), bn.Header().Number())
 
 	// it := tr.NodeIterator(nil)
 	// n = 0
 	// size = 0
+	// maxP := 0
 	// for it.Next(true) {
 	// 	if !it.Hash().IsZero() {
+	// 		if l := len(it.Path()); l > maxP {
+	// 			maxP = l
+	// 		}
 	// 		n++
 	// 		it.Node(func(b []byte) error {
 	// 			size += len(b)
@@ -179,7 +183,7 @@ func defaultAction(ctx *cli.Context) error {
 	// 		})
 	// 	}
 	// }
-	// fmt.Println("index nodes", n, size)
+	// fmt.Println("index nodes", n, size, maxP)
 
 	// ss := mainDB.NewBucket([]byte{0, 'i'})
 	// n = 0
@@ -221,6 +225,31 @@ func defaultAction(ctx *cli.Context) error {
 	// 	return true
 	// })
 	// fmt.Println("index nodes(it 15+)", n, size)
+	// ss := mainDB.NewBucket([]byte{0, 'a'})
+	// n = 0
+	// size = 0
+	// m := make(map[uint64]uint64)
+	// ss.Iterate(kv.Range{}, func(p kv.Pair) bool {
+	// 	n++
+	// 	size += len(p.Value())
+	// 	x := binary.BigEndian.Uint64(p.Key())
+	// 	v := binary.BigEndian.Uint32(p.Key()[8:])
+
+	// 	xx := m[x]
+	// 	if (xx & 0xffffffff) == 0 {
+	// 		xx |= uint64(v)
+	// 	}
+	// 	if v > uint32(xx&0xffffffff) {
+	// 		xx |= (uint64(v) << 32)
+	// 	}
+	// 	m[x] = xx
+	// 	return true
+	// })
+	// fmt.Println("index nodes", n, size)
+	// for k, v := range m {
+	// 	fmt.Printf("%x,[%v, %v]\n", k, v&0xffffffff, v>>32)
+	// }
+	// return nil
 
 	// id, _ := repo.NewBestChain().GetBlockID(9404459)
 	// sum, _ := repo.GetBlockSummary(id)

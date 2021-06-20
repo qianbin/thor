@@ -312,6 +312,8 @@ func (i *errorIterator) Hash() thor.Bytes32                { return thor.Bytes32
 func (i *errorIterator) Node(func([]byte) error) error     { return i.err }
 func (i *errorIterator) Extra() []byte                     { return nil }
 func (i *errorIterator) Ver() uint32                       { return 0 }
+func (i *errorIterator) Short() bool                       { return false }
+func (i *errorIterator) ShortKey() []byte                  { return nil }
 func (i *errorIterator) Branch() bool                      { return false }
 func (i *errorIterator) ChildVer(index int) (uint32, bool) { return 0, false }
 func (i *errorIterator) Parent() thor.Bytes32              { return thor.Bytes32{} }
