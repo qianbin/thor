@@ -20,7 +20,6 @@ import (
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/vechain/thor/thor"
 )
 
@@ -51,11 +50,15 @@ type SecureTrie struct {
 // Loaded nodes are kept around until their 'cache generation' expires.
 // A new cache generation is created by each call to Commit.
 func NewSecure(root thor.Bytes32, db Database) (*SecureTrie, error) {
+	return NewSecureVersioned(root, db, 0)
+}
+
+func NewSecureVersioned(root thor.Bytes32, db Database, ver uint32) (*SecureTrie, error) {
 	if db == nil {
 		panic("NewSecure called with nil database")
 	}
 
-	trie, err := New(root, db)
+	trie, err := NewVersioned(root, db, ver)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +142,7 @@ func (t *SecureTrie) GetKey(shaKey []byte) []byte {
 // Committing flushes nodes from memory. Subsequent Get calls will load nodes
 // from the database.
 func (t *SecureTrie) Commit() (root thor.Bytes32, err error) {
-	return t.CommitTo(t.trie.db)
+	return t.CommitVersioned(0)
 }
 
 func (t *SecureTrie) Hash() thor.Bytes32 {
@@ -168,6 +171,14 @@ func (t *SecureTrie) NodeIterator(start []byte) NodeIterator {
 // the trie's database. Calling code must ensure that the changes made to db are
 // written back to the trie's attached database before using the trie.
 func (t *SecureTrie) CommitTo(db DatabaseWriter) (root thor.Bytes32, err error) {
+	return t.CommitVersionedTo(db, 0)
+}
+
+func (t *SecureTrie) CommitVersioned(newVer uint32) (root thor.Bytes32, err error) {
+	return t.CommitVersionedTo(t.trie.db, newVer)
+}
+
+func (t *SecureTrie) CommitVersionedTo(db DatabaseWriter, newVer uint32) (root thor.Bytes32, err error) {
 	// Write all the pre-images to the actual disk database
 	if len(t.getSecKeyCache()) > 0 {
 		for hk, key := range t.secKeyCache {
@@ -175,7 +186,7 @@ func (t *SecureTrie) CommitTo(db DatabaseWriter) (root thor.Bytes32, err error) 
 		}
 		t.secKeyCache = make(map[string][]byte)
 	}
-	return t.trie.CommitTo(db)
+	return t.trie.CommitVersionedTo(db, newVer)
 }
 
 // hashKey returns the hash of key as an ephemeral buffer.

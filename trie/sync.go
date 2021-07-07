@@ -105,7 +105,7 @@ func (s *TrieSync) AddSubTrie(root thor.Bytes32, depth int, parent thor.Bytes32,
 	}
 	key := root.Bytes()
 	enc, _ := s.database.Get(key)
-	if local, err := decodeNode(key, enc); local != nil && err == nil {
+	if local, err := decodeNode(&hashNode{key, 0}, enc, nil, nil); local != nil && err == nil {
 		return
 	}
 	// Assemble the new sub-trie sync request
@@ -191,7 +191,7 @@ func (s *TrieSync) Process(results []SyncResult) (bool, int, error) {
 			continue
 		}
 		// Decode the node data content and update the request
-		node, err := decodeNode(item.Hash[:], item.Data)
+		node, err := decodeNode(&hashNode{item.Hash[:], 0}, item.Data, nil, nil)
 		if err != nil {
 			return committed, i, err
 		}
@@ -283,20 +283,20 @@ func (s *TrieSync) children(req *request, object node) ([]*request, error) {
 	for _, child := range children {
 		// Notify any external watcher of a new key/value node
 		if req.callback != nil {
-			if node, ok := (child.node).(valueNode); ok {
-				if err := req.callback(node, req.hash); err != nil {
+			if node, ok := (child.node).(*valueNode); ok {
+				if err := req.callback(node.value, req.hash); err != nil {
 					return nil, err
 				}
 			}
 		}
 		// If the child references another node, resolve or schedule
-		if node, ok := (child.node).(hashNode); ok {
+		if node, ok := (child.node).(*hashNode); ok {
 			// Try to resolve the node from the local database
-			hash := thor.BytesToBytes32(node)
+			hash := thor.BytesToBytes32(node.hash)
 			if _, ok := s.membatch.batch[hash]; ok {
 				continue
 			}
-			if ok, _ := s.database.Has(node); ok {
+			if ok, _ := s.database.Has(node.hash); ok {
 				continue
 			}
 			// Locally unknown node, schedule for retrieval

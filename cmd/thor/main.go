@@ -127,6 +127,7 @@ func main() {
 }
 
 func defaultAction(ctx *cli.Context) error {
+	//	defer profile.Start(profile.NoShutdownHook).Stop()
 	exitSignal := handleExitSignal()
 
 	defer func() { log.Info("exited") }()
@@ -159,6 +160,89 @@ func defaultAction(ctx *cli.Context) error {
 	if err != nil {
 		return err
 	}
+
+	// bb := repo.BestBlock()
+
+	// nAccLeaf := 0
+	// nAccNode := 0
+	// nAccNodeSize := 0
+	// nStLeaf := 0
+	// nStNode := 0
+	// nStNodeSize := 0
+
+	// at := mainDB.NewTrie(state.AccountTrieName, bb.Header().StateRoot(), bb.Header().Number())
+
+	// it := at.NodeIterator(nil, nil)
+	// for it.Next(true) {
+	// 	if !it.Hash().IsZero() {
+	// 		nAccNode++
+	// 		it.Node(func(b []byte) error {
+	// 			nAccNodeSize += len(b)
+	// 			return nil
+	// 		})
+	// 	}
+	// 	if it.Leaf() {
+	// 		nAccLeaf++
+
+	// 		var acc state.Account
+	// 		if err := rlp.DecodeBytes(it.LeafBlob(), &acc); err != nil {
+	// 			return err
+	// 		}
+
+	// 		if len(acc.StorageRoot) > 0 {
+	// 			var meta state.AccountMeta
+	// 			if err := rlp.DecodeBytes(it.LeafMeta(), &meta); err != nil {
+	// 				return err
+	// 			}
+
+	// 			st := mainDB.NewTrie(
+	// 				state.StorageTrieName(meta.Addr),
+	// 				thor.BytesToBytes32(acc.StorageRoot),
+	// 				meta.StorageCommitNum,
+	// 			)
+
+	// 			sit := st.NodeIterator(nil, nil)
+	// 			for sit.Next(true) {
+	// 				if !sit.Hash().IsZero() {
+	// 					nStNode++
+	// 					sit.Node(func(b []byte) error {
+	// 						nStNodeSize += len(b)
+	// 						return nil
+	// 					})
+	// 				}
+
+	// 				if sit.Leaf() {
+	// 					nStLeaf++
+	// 				}
+	// 			}
+	// 		}
+	// 	}
+	// }
+
+	// fmt.Println(nAccLeaf, nAccNode, nAccNodeSize, nStLeaf, nStNode, nStNodeSize)
+	// return nil
+
+	// n := 0
+	// ss := mainDB.NewBucket([]byte{0, 'i'})
+	// m := make(map[uint32][]uint32)
+	// ss.Iterate(kv.Range{}, func(p kv.Pair) bool {
+	// 	ep := binary.BigEndian.Uint32(p.Key())
+	// 	v := binary.BigEndian.Uint32(p.Key()[4:])
+	// 	m[ep] = append(m[ep], v)
+	// 	n++
+	// 	return true
+	// })
+	// fmt.Println(n)
+	// for k, v := range m {
+	// 	if len(v) > 1 {
+	// 		fmt.Printf("%x ", k)
+	// 		for _, x := range v {
+	// 			fmt.Printf("%v ", x)
+	// 		}
+	// 		fmt.Println()
+	// 	}
+	// }
+	// return nil
 
 	master, err := loadNodeMaster(ctx)
 	if err != nil {
@@ -214,6 +298,7 @@ func defaultAction(ctx *cli.Context) error {
 	}
 
 	return node.New(
+		mainDB,
 		master,
 		repo,
 		state.NewStater(mainDB),

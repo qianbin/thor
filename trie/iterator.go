@@ -31,6 +31,7 @@ type Iterator struct {
 
 	Key   []byte // Current data key on which the iterator is positioned on
 	Value []byte // Current data value on which the iterator is positioned on
+	Meta  []byte
 	Err   error
 }
 
@@ -49,11 +50,13 @@ func (it *Iterator) Next() bool {
 		if it.nodeIt.Leaf() {
 			it.Key = it.nodeIt.LeafKey()
 			it.Value = it.nodeIt.LeafBlob()
+			it.Meta = it.nodeIt.LeafMeta()
 			return true
 		}
 	}
 	it.Key = nil
 	it.Value = nil
+	it.Meta = nil
 	it.Err = it.nodeIt.Error()
 	return false
 }
@@ -76,8 +79,16 @@ type NodeIterator interface {
 	// Hash returns the hash of the current node.
 	Hash() thor.Bytes32
 
-	// Node returns encoded current node.
-	Node() ([]byte, error)
+	// Node handles encoded current node. The handler will not be called if the current node is an internal
+	// node without hash.
+	Node(func([]byte) error) error
+
+	Ver() uint32
+
+	Branch() bool
+	Short() bool
+	ChildVer(index int) (uint32, bool)
+	ShortKey() []byte
 
 	// Parent returns the hash of the parent of the current node. The hash may be the one
 	// grandparent if the immediate parent is an internal node with no hash.
@@ -100,6 +111,7 @@ type NodeIterator interface {
 	// after calling Next.
 	LeafBlob() []byte
 
+	LeafMeta() []byte
 	// LeafProof returns the Merkle proof of the leaf. The method panics if the
 	// iterator is not positioned at a leaf. Callers must not retain references
 	// to the value after calling Next.
@@ -111,17 +123,18 @@ type NodeIterator interface {
 type nodeIteratorState struct {
 	hash    thor.Bytes32 // Hash of the node being iterated (nil if not standalone)
 	node    node         // Trie node being iterated
-	enc     []byte
+	enc     CompositValue
 	parent  thor.Bytes32 // Hash of the first full ancestor node (nil if current is the root)
 	index   int          // Child to be processed next
 	pathlen int          // Length of the path to this node
 }
 
 type nodeIterator struct {
-	trie  *Trie                // Trie being iterated
-	stack []*nodeIteratorState // Hierarchy of trie nodes persisting the iteration state
-	path  []byte               // Path to the current node
-	err   error                // Failure set in case of an internal error in the iterator
+	trie   *Trie                // Trie being iterated
+	stack  []*nodeIteratorState // Hierarchy of trie nodes persisting the iteration state
+	path   []byte               // Path to the current node
+	err    error                // Failure set in case of an internal error in the iterator
+	filter func(path []byte, ver uint32) bool
 }
 
 // errIteratorEnd is stored in nodeIterator.err when iteration is done.
@@ -137,12 +150,13 @@ func (e seekError) Error() string {
 	return "seek error: " + e.err.Error()
 }
 
-func newNodeIterator(trie *Trie, start []byte) NodeIterator {
+func newNodeIterator(trie *Trie, start []byte, filter func(path []byte, ver uint32) bool) NodeIterator {
 	if trie.Hash() == emptyState {
 		return new(nodeIterator)
 	}
 	it := &nodeIterator{trie: trie}
 	it.err = it.seek(start)
+	it.filter = filter
 	return it
 }
 
@@ -153,27 +167,94 @@ func (it *nodeIterator) Hash() thor.Bytes32 {
 	return it.stack[len(it.stack)-1].hash
 }
 
-func (it *nodeIterator) Node() ([]byte, error) {
+func (it *nodeIterator) Node(cb func([]byte) error) (err error) {
 	if len(it.stack) == 0 {
-		return nil, nil
+		return nil
 	}
 	st := it.stack[len(it.stack)-1]
 	if st.hash.IsZero() {
-		return nil, nil
+		return nil
 	}
 
 	if len(st.enc) > 0 {
-		return st.enc, nil
+		return cb(st.enc)
 	}
 
 	h := newHasher()
 	defer returnHasherToPool(h)
 
-	collapsed, _, err := h.hashChildren(st.node, nil, it.path)
+	collapsed, _, cVers, metaList, err := h.hashChildren(st.node, nil, it.path, 0)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return rlp.EncodeToBytes(collapsed)
+
+	h.tmp.Reset()
+	if err := rlp.Encode(&h.tmp, collapsed); err != nil {
+		return err
+	}
+
+	if err := rlp.Encode(&h.tmp, cVers); err != nil {
+		return err
+	}
+	if err := rlp.Encode(&h.tmp, metaList); err != nil {
+		return err
+	}
+	return cb(h.tmp)
+}
+func (it *nodeIterator) Branch() bool {
+	if len(it.stack) == 0 {
+		return false
+	}
+	_, ok := it.stack[len(it.stack)-1].node.(*fullNode)
+	return ok
+}
+func (it *nodeIterator) Short() bool {
+	if len(it.stack) == 0 {
+		return false
+	}
+	_, ok := it.stack[len(it.stack)-1].node.(*shortNode)
+	return ok
+}
+
+func (it *nodeIterator) ShortKey() []byte {
+	if len(it.stack) == 0 {
+		return nil
+	}
+	short := it.stack[len(it.stack)-1].node.(*shortNode)
+	return short.Key
+}
+
+func (it *nodeIterator) ChildVer(index int) (uint32, bool) {
+	if len(it.stack) == 0 {
+		return 0, false
+	}
+	if n, ok := it.stack[len(it.stack)-1].node.(*fullNode); ok {
+		c := n.Children[index]
+		if c != nil {
+			return c.version(), true
+		}
+	}
+	return 0, false
+}
+
+func (it *nodeIterator) Ver() uint32 {
+	if len(it.stack) == 0 {
+		return 0
+	}
+	n := it.stack[len(it.stack)-1].node
+	if n != nil {
+		return n.version()
+	}
+	return 0
+}
+
+func (it *nodeIterator) LeafMeta() []byte {
+	if len(it.stack) > 0 {
+		if node, ok := it.stack[len(it.stack)-1].node.(*valueNode); ok {
+			return node.meta
+		}
+	}
+	panic("not at leaf")
 }
 
 func (it *nodeIterator) Parent() thor.Bytes32 {
@@ -189,7 +270,7 @@ func (it *nodeIterator) Leaf() bool {
 
 func (it *nodeIterator) LeafKey() []byte {
 	if len(it.stack) > 0 {
-		if _, ok := it.stack[len(it.stack)-1].node.(valueNode); ok {
+		if _, ok := it.stack[len(it.stack)-1].node.(*valueNode); ok {
 			return hexToKeybytes(it.path)
 		}
 	}
@@ -198,8 +279,8 @@ func (it *nodeIterator) LeafKey() []byte {
 
 func (it *nodeIterator) LeafBlob() []byte {
 	if len(it.stack) > 0 {
-		if node, ok := it.stack[len(it.stack)-1].node.(valueNode); ok {
-			return []byte(node)
+		if node, ok := it.stack[len(it.stack)-1].node.(*valueNode); ok {
+			return node.value
 		}
 	}
 	panic("not at leaf")
@@ -207,7 +288,7 @@ func (it *nodeIterator) LeafBlob() []byte {
 
 func (it *nodeIterator) LeafProof() [][]byte {
 	if len(it.stack) > 0 {
-		if _, ok := it.stack[len(it.stack)-1].node.(valueNode); ok {
+		if _, ok := it.stack[len(it.stack)-1].node.(*valueNode); ok {
 			hasher := newHasher()
 			defer returnHasherToPool(hasher)
 
@@ -215,9 +296,9 @@ func (it *nodeIterator) LeafProof() [][]byte {
 
 			for i, item := range it.stack[:len(it.stack)-1] {
 				// Gather nodes that end up as hash nodes (or the root)
-				node, _, _ := hasher.hashChildren(item.node, nil, nil)
-				hashed, _ := hasher.store(node, nil, nil, false)
-				if _, ok := hashed.(hashNode); ok || i == 0 {
+				node, _, _, _, _ := hasher.hashChildren(item.node, nil, nil, 0)
+				hashed, _ := hasher.store(node, nil, nil, false, 0, nil, nil)
+				if _, ok := hashed.(*hashNode); ok || i == 0 {
 					enc, _ := rlp.EncodeToBytes(node)
 					proofs = append(proofs, enc)
 				}
@@ -286,6 +367,11 @@ func (it *nodeIterator) seek(prefix []byte) error {
 // peek creates the next state of the iterator.
 func (it *nodeIterator) peek(descend bool) (*nodeIteratorState, *int, []byte, error) {
 	if len(it.stack) == 0 {
+		if f, n := it.filter, it.trie.root; f != nil && n != nil {
+			if !f(nil, n.version()) {
+				return nil, nil, nil, errIteratorEnd
+			}
+		}
 		// Initialize the iterator if we've just started.
 		root := it.trie.Hash()
 		state := &nodeIteratorState{node: it.trie.root, index: -1}
@@ -321,14 +407,14 @@ func (it *nodeIterator) peek(descend bool) (*nodeIteratorState, *int, []byte, er
 }
 
 func (st *nodeIteratorState) resolve(tr *Trie, path []byte) error {
-	if hash, ok := st.node.(hashNode); ok {
+	if hash, ok := st.node.(*hashNode); ok {
 		resolved, enc, err := tr.resolveHash(hash, path, true)
 		if err != nil {
 			return err
 		}
 		st.node = resolved
 		st.enc = enc
-		st.hash = thor.BytesToBytes32(hash)
+		st.hash = thor.BytesToBytes32(hash.hash)
 	}
 	return nil
 }
@@ -340,15 +426,24 @@ func (it *nodeIterator) nextChild(parent *nodeIteratorState, ancestor thor.Bytes
 		for i := parent.index + 1; i < len(node.Children); i++ {
 			child := node.Children[i]
 			if child != nil {
-				hash, _ := child.cache()
+				var hash thor.Bytes32
+				if h, _ := child.cache(); h != nil {
+					hash = thor.BytesToBytes32(h.hash)
+				}
+
+				path := append(it.path, byte(i))
+				if _, ok := child.(*hashNode); (ok || !hash.IsZero()) && it.filter != nil {
+					if !it.filter(path, child.version()) {
+						continue
+					}
+				}
 				state := &nodeIteratorState{
-					hash:    thor.BytesToBytes32(hash),
+					hash:    hash,
 					node:    child,
 					parent:  ancestor,
 					index:   -1,
 					pathlen: len(it.path),
 				}
-				path := append(it.path, byte(i))
 				parent.index = i - 1
 				return state, path, true
 			}
@@ -356,15 +451,24 @@ func (it *nodeIterator) nextChild(parent *nodeIteratorState, ancestor thor.Bytes
 	case *shortNode:
 		// Short node, return the pointer singleton child
 		if parent.index < 0 {
-			hash, _ := node.Val.cache()
+			var hash thor.Bytes32
+			if h, _ := node.Val.cache(); h != nil {
+				hash = thor.BytesToBytes32(h.hash)
+			}
+
+			path := append(it.path, node.Key...)
+			if _, ok := node.Val.(*hashNode); (ok || !hash.IsZero()) && it.filter != nil {
+				if !it.filter(path, node.Val.version()) {
+					return parent, it.path, false
+				}
+			}
 			state := &nodeIteratorState{
-				hash:    thor.BytesToBytes32(hash),
+				hash:    hash,
 				node:    node.Val,
 				parent:  ancestor,
 				index:   -1,
 				pathlen: len(it.path),
 			}
-			path := append(it.path, node.Key...)
 			return state, path, true
 		}
 	}
@@ -389,18 +493,55 @@ func compareNodes(a, b NodeIterator) int {
 	if cmp := bytes.Compare(a.Path(), b.Path()); cmp != 0 {
 		return cmp
 	}
-	if a.Leaf() && !b.Leaf() {
-		return -1
-	} else if b.Leaf() && !a.Leaf() {
+
+	if a.Leaf() != b.Leaf() {
 		return 1
 	}
-	if cmp := bytes.Compare(a.Hash().Bytes(), b.Hash().Bytes()); cmp != 0 {
-		return cmp
+
+	if a.Hash() != b.Hash() {
+		return 1
 	}
+
+	if a.Ver() != b.Ver() {
+		return 1
+	}
+
 	if a.Leaf() && b.Leaf() {
-		return bytes.Compare(a.LeafBlob(), b.LeafBlob())
+		if !bytes.Equal(a.LeafBlob(), b.LeafBlob()) {
+			return 1
+		}
+		if !bytes.Equal(a.LeafMeta(), b.LeafMeta()) {
+			return 1
+		}
 	}
+
 	return 0
+
+	// if a.Leaf() && !b.Leaf() {
+	// 	return -1
+	// } else if b.Leaf() && !a.Leaf() {
+	// 	return 1
+	// }
+	// if cmp := bytes.Compare(a.Hash().Bytes(), b.Hash().Bytes()); cmp != 0 {
+	// 	return cmp
+	// }
+
+	// va, vb := a.Ver(), b.Ver()
+	// if va > vb {
+	// 	return 1
+	// } else if va < vb {
+	// 	return -1
+	// }
+
+	// if a.Leaf() && b.Leaf() {
+	// 	r := bytes.Compare(a.LeafBlob(), b.LeafBlob())
+	// 	if r == 0 {
+	// 		return bytes.Compare(a.Extra(), b.Extra())
+	// 	}
+	// 	return r
+	// }
+
+	// return 0
 }
 
 type differenceIterator struct {
@@ -424,9 +565,31 @@ func NewDifferenceIterator(a, b NodeIterator) (NodeIterator, *int) {
 func (it *differenceIterator) Hash() thor.Bytes32 {
 	return it.b.Hash()
 }
+func (it *differenceIterator) Short() bool {
+	return it.b.Short()
+}
+func (it *differenceIterator) ShortKey() []byte {
+	return it.b.ShortKey()
+}
 
-func (it *differenceIterator) Node() ([]byte, error) {
-	return it.b.Node()
+func (it *differenceIterator) Node(cb func([]byte) error) error {
+	return it.b.Node(cb)
+}
+
+func (it *differenceIterator) Branch() bool {
+	return it.b.Branch()
+}
+
+func (it *differenceIterator) ChildVer(index int) (uint32, bool) {
+	return it.b.ChildVer(index)
+}
+
+func (it *differenceIterator) Ver() uint32 {
+	return it.b.Ver()
+}
+
+func (it *differenceIterator) LeafMeta() []byte {
+	return it.b.LeafMeta()
 }
 
 func (it *differenceIterator) Parent() thor.Bytes32 {
@@ -531,12 +694,35 @@ func NewUnionIterator(iters []NodeIterator) (NodeIterator, *int) {
 	ui := &unionIterator{items: &h}
 	return ui, &ui.count
 }
+func (it *unionIterator) Short() bool {
+	return (*it.items)[0].Short()
+}
+func (it *unionIterator) ShortKey() []byte {
+	return (*it.items)[0].ShortKey()
+}
 
 func (it *unionIterator) Hash() thor.Bytes32 {
 	return (*it.items)[0].Hash()
 }
-func (it *unionIterator) Node() ([]byte, error) {
-	return (*it.items)[0].Node()
+
+func (it *unionIterator) Node(cb func([]byte) error) error {
+	return (*it.items)[0].Node(cb)
+}
+
+func (it *unionIterator) Branch() bool {
+	return (*it.items)[0].Branch()
+}
+
+func (it *unionIterator) ChildVer(index int) (uint32, bool) {
+	return (*it.items)[0].ChildVer(index)
+}
+
+func (it *unionIterator) Ver() uint32 {
+	return (*it.items)[0].Ver()
+}
+
+func (it *unionIterator) LeafMeta() []byte {
+	return (*it.items)[0].LeafMeta()
 }
 
 func (it *unionIterator) Parent() thor.Bytes32 {

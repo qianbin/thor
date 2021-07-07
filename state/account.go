@@ -22,6 +22,12 @@ type Account struct {
 	Master      []byte // master address
 	CodeHash    []byte // hash of code
 	StorageRoot []byte // merkle root of the storage trie
+	meta        AccountMeta
+}
+
+type AccountMeta struct {
+	Addr             thor.Address
+	StorageCommitNum uint32
 }
 
 // IsEmpty returns if an account is empty.
@@ -63,7 +69,7 @@ func emptyAccount() *Account {
 // loadAccount load an account object by address in trie.
 // It returns empty account is no account found at the address.
 func loadAccount(trie *muxdb.Trie, addr thor.Address) (*Account, error) {
-	data, err := trie.Get(addr[:])
+	data, meta, err := trie.GetMeta(thor.Blake2b(addr[:]).Bytes())
 	if err != nil {
 		return nil, err
 	}
@@ -74,6 +80,9 @@ func loadAccount(trie *muxdb.Trie, addr thor.Address) (*Account, error) {
 	if err := rlp.DecodeBytes(data, &a); err != nil {
 		return nil, err
 	}
+	if err := rlp.DecodeBytes(meta, &a.meta); err != nil {
+		return nil, err
+	}
 	return &a, nil
 }
 
@@ -82,23 +91,30 @@ func loadAccount(trie *muxdb.Trie, addr thor.Address) (*Account, error) {
 func saveAccount(trie *muxdb.Trie, addr thor.Address, a *Account) error {
 	if a.IsEmpty() {
 		// delete if account is empty
-		return trie.Update(addr[:], nil)
+		return trie.Update(thor.Blake2b(addr[:]).Bytes(), nil)
 	}
 
 	data, err := rlp.EncodeToBytes(a)
 	if err != nil {
 		return err
 	}
-	return trie.Update(addr[:], data)
+
+	a.meta.Addr = addr
+	meta, err := rlp.EncodeToBytes(&a.meta)
+	if err != nil {
+		return err
+	}
+
+	return trie.UpdateMeta(thor.Blake2b(addr[:]).Bytes(), data, meta)
 }
 
 // loadStorage load storage data for given key.
 func loadStorage(trie *muxdb.Trie, key thor.Bytes32) (rlp.RawValue, error) {
-	return trie.Get(key[:])
+	return trie.Get(thor.Blake2b(key[:]).Bytes())
 }
 
 // saveStorage save value for given key.
 // If the data is zero, the given key will be deleted.
 func saveStorage(trie *muxdb.Trie, key thor.Bytes32, data rlp.RawValue) error {
-	return trie.Update(key[:], data)
+	return trie.UpdateMeta(thor.Blake2b(key[:]).Bytes(), data, key[:])
 }

@@ -7,19 +7,29 @@ package thor
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestBytes32(t *testing.T) {
-	bytes32 := BytesToBytes32([]byte("bytes32"))
-	data, _ := json.Marshal(&bytes32)
-	assert.Equal(t, "\""+bytes32.String()+"\"", string(data))
+	var a = [][]byte{{1, 2}, {3, 4}}
+	data, _ := rlp.EncodeToBytes(a)
+	fmt.Println(data)
+	c, r, _ := rlp.SplitList(data)
+	fmt.Println(r)
+	for {
+		_, c, r, _ = rlp.Split(c)
+		fmt.Println(c)
+		if len(r) > 0 {
+			c = r
+		} else {
+			break
+		}
+	}
 
-	var dec Bytes32
-	assert.Nil(t, json.Unmarshal(data, &dec))
-	assert.Equal(t, bytes32, dec)
 }
 
 func TestAddress(t *testing.T) {

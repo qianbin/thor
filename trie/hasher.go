@@ -62,34 +62,38 @@ func returnHasherToPool(h *hasher) {
 
 // hash collapses a node down into a hash node, also returning a copy of the
 // original node initialized with the computed hash to replace the original one.
-func (h *hasher) hash(n node, db DatabaseWriter, path []byte, force bool) (node, node, error) {
+func (h *hasher) hash(n node, db DatabaseWriter, path []byte, force bool, newVer uint32) (node, node, [][]byte, error) {
 	// If we're not storing the node, just hashing, use available cached data
 	if hash, dirty := n.cache(); hash != nil {
 		if db == nil {
-			return hash, n, nil
+			return hash, n, nil, nil
 		}
-		if !dirty {
+		if !dirty && !force { // !force is non-root node, that means root node is always stored
 			switch n.(type) {
 			case *fullNode, *shortNode:
-				return hash, hash, nil
+				return hash, hash, nil, nil
 			default:
-				return hash, n, nil
+				return hash, n, nil, nil
 			}
 		}
 	}
 	// Trie not processed yet or needs storage, walk the children
-	collapsed, cached, err := h.hashChildren(n, db, path)
+	collapsed, cached, cVers, metaList, err := h.hashChildren(n, db, path, newVer)
 	if err != nil {
-		return hashNode{}, n, err
+		return nil, n, nil, err
 	}
-	hashed, err := h.store(collapsed, db, path, force)
+	hashed, err := h.store(collapsed, db, path, force, newVer, cVers, metaList)
 	if err != nil {
-		return hashNode{}, n, err
+		return nil, n, nil, err
+	}
+	if _, ok := hashed.(*hashNode); ok {
+		// stored
+		metaList = nil
 	}
 	// Cache the hash of the node for later reuse and remove
 	// the dirty flag in commit mode. It's fine to assign these values directly
 	// without copying the node first because hashChildren copies it.
-	cachedHash, _ := hashed.(hashNode)
+	cachedHash, _ := hashed.(*hashNode)
 	switch cn := cached.(type) {
 	case *shortNode:
 		cn.flags.hash = cachedHash
@@ -102,14 +106,17 @@ func (h *hasher) hash(n node, db DatabaseWriter, path []byte, force bool) (node,
 			cn.flags.dirty = false
 		}
 	}
-	return hashed, cached, nil
+	return hashed, cached, metaList, nil
 }
 
 // hashChildren replaces the children of a node with their hashes if the encoded
 // size of the child is larger than a hash, returning the collapsed node as well
 // as a replacement for the original node with the child hashes cached in.
-func (h *hasher) hashChildren(original node, db DatabaseWriter, path []byte) (node, node, error) {
-	var err error
+func (h *hasher) hashChildren(original node, db DatabaseWriter, path []byte, newVer uint32) (node, node, []uint32, [][]byte, error) {
+	var (
+		err      error
+		metaList [][]byte
+	)
 
 	switch n := original.(type) {
 	case *shortNode:
@@ -117,48 +124,59 @@ func (h *hasher) hashChildren(original node, db DatabaseWriter, path []byte) (no
 		collapsed, cached := n.copy(), n.copy()
 		collapsed.Key = hexToCompact(n.Key)
 		cached.Key = common.CopyBytes(n.Key)
-
-		if _, ok := n.Val.(valueNode); !ok {
-
-			collapsed.Val, cached.Val, err = h.hash(n.Val, db, append(path, n.Key...), false)
+		var cVer uint32
+		if vn, ok := n.Val.(*valueNode); !ok {
+			var ml [][]byte
+			collapsed.Val, cached.Val, ml, err = h.hash(n.Val, db, append(path, n.Key...), false, newVer)
 			if err != nil {
-				return original, original, err
+				return original, original, nil, nil, err
 			}
+			if v := collapsed.Val.version(); v != 0 {
+				cVer = v
+			}
+			metaList = append(metaList, ml...)
+		} else {
+			metaList = append(metaList, vn.meta)
 		}
 		if collapsed.Val == nil {
-			collapsed.Val = valueNode(nil) // Ensure that nil children are encoded as empty strings.
+			collapsed.Val = &valueNode{} // Ensure that nil children are encoded as empty strings.
 		}
-		return collapsed, cached, nil
-
+		return collapsed, cached, []uint32{cVer}, metaList, nil
 	case *fullNode:
 		// Hash the full node's children, caching the newly hashed subtrees
 		collapsed, cached := n.copy(), n.copy()
-
+		var cVers [16]uint32
 		for i := 0; i < 16; i++ {
 			if n.Children[i] != nil {
-				collapsed.Children[i], cached.Children[i], err = h.hash(n.Children[i], db, append(path, byte(i)), false)
+				var ml [][]byte
+				collapsed.Children[i], cached.Children[i], ml, err = h.hash(n.Children[i], db, append(path, byte(i)), false, newVer)
 				if err != nil {
-					return original, original, err
+					return original, original, nil, nil, err
 				}
+				cVers[i] = collapsed.Children[i].version()
+				metaList = append(metaList, ml...)
 			} else {
-				collapsed.Children[i] = valueNode(nil) // Ensure that nil children are encoded as empty strings.
+				collapsed.Children[i] = &valueNode{} // Ensure that nil children are encoded as empty strings.
 			}
 		}
-		cached.Children[16] = n.Children[16]
 		if collapsed.Children[16] == nil {
-			collapsed.Children[16] = valueNode(nil)
+			collapsed.Children[16] = &valueNode{}
+		} else {
+			if vn, ok := collapsed.Children[16].(*valueNode); ok {
+				metaList = append(metaList, vn.meta)
+			}
 		}
-		return collapsed, cached, nil
+		return collapsed, cached, cVers[:], metaList, nil
 
 	default:
 		// Value and hash nodes don't have children so they're left as were
-		return n, original, nil
+		return n, original, nil, nil, nil
 	}
 }
 
-func (h *hasher) store(n node, db DatabaseWriter, path []byte, force bool) (node, error) {
+func (h *hasher) store(n node, db DatabaseWriter, path []byte, force bool, newVer uint32, cVers []uint32, metaList [][]byte) (node, error) {
 	// Don't store hashes or empty nodes.
-	if _, isHash := n.(hashNode); n == nil || isHash {
+	if _, isHash := n.(*hashNode); n == nil || isHash {
 		return n, nil
 	}
 	// Generate the RLP encoding of the node
@@ -175,17 +193,33 @@ func (h *hasher) store(n node, db DatabaseWriter, path []byte, force bool) (node
 	if hash == nil {
 		h.sha.Reset()
 		h.sha.Write(h.tmp)
-		hash = hashNode(h.sha.Sum(nil))
+		hash = &hashNode{hash: h.sha.Sum(nil)}
 	}
 	if db != nil {
 		if ex, ok := db.(DatabaseWriterEx); ok {
-			return hash, ex.PutEncoded(&NodeKey{
-				hash,
+			if len(cVers) == 1 {
+				if err := rlp.Encode(&h.tmp, cVers[0]); err != nil {
+					return nil, err
+				}
+			} else {
+				if err := rlp.Encode(&h.tmp, cVers); err != nil {
+					return nil, err
+				}
+			}
+
+			if err := rlp.Encode(&h.tmp, metaList); err != nil {
+				return nil, err
+			}
+
+			hash.ver = newVer
+			return hash, ex.PutEx(&CompositKey{
+				hash.hash,
+				newVer,
 				path,
 				false,
-			}, h.tmp)
+			}, CompositValue(h.tmp))
 		}
-		return hash, db.Put(hash, h.tmp)
+		return hash, db.Put(hash.hash, h.tmp)
 	}
 	return hash, nil
 }

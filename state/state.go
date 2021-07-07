@@ -27,8 +27,8 @@ const (
 // StorageTrieName returns the name of storage trie.
 //
 // Each storage trie has a unique name, which can improve IO performance.
-func StorageTrieName(addressHash thor.Bytes32) string {
-	return "s" + string(addressHash[:16])
+func StorageTrieName(addr thor.Address) string {
+	return "s" + string(addr[:])
 }
 
 // Error is the error caused by state access failure.
@@ -46,14 +46,16 @@ type State struct {
 	trie  *muxdb.Trie                    // the accounts trie reader
 	cache map[thor.Address]*cachedObject // cache of accounts trie
 	sm    *stackedmap.StackedMap         // keeps revisions of accounts state
+	ver   uint32
 }
 
 // New create state object.
-func New(db *muxdb.MuxDB, root thor.Bytes32) *State {
+func New(db *muxdb.MuxDB, root thor.Bytes32, ver uint32) *State {
 	state := State{
 		db:    db,
-		trie:  db.NewSecureTrie(AccountTrieName, root),
+		trie:  db.NewTrie(AccountTrieName, root, ver),
 		cache: make(map[thor.Address]*cachedObject),
+		ver:   ver,
 	}
 
 	state.sm = stackedmap.New(func(key interface{}) (interface{}, bool, error) {
@@ -108,7 +110,7 @@ func (s *State) getCachedObject(addr thor.Address) (*cachedObject, error) {
 	if err != nil {
 		return nil, err
 	}
-	co := newCachedObject(s.db, addr, a)
+	co := newCachedObject(s.db, addr, a, s.ver)
 	s.cache[addr] = co
 	return co, nil
 }
@@ -343,7 +345,7 @@ func (s *State) BuildStorageTrie(addr thor.Address) (*muxdb.Trie, error) {
 
 	root := thor.BytesToBytes32(acc.StorageRoot)
 
-	trie := s.db.NewSecureTrie(StorageTrieName(thor.Blake2b(addr[:])), root)
+	trie := s.db.NewTrie(StorageTrieName(addr), root, s.ver)
 
 	// traverse journal to filter out storage changes for addr
 	s.sm.Journal(func(k, v interface{}) bool {
@@ -423,25 +425,32 @@ func (s *State) Stage() (*Stage, error) {
 
 	stage := &Stage{
 		db:          s.db,
-		accountTrie: s.db.NewSecureTrie(AccountTrieName, s.trie.Hash()),
+		accountTrie: s.db.NewTrie(AccountTrieName, s.trie.Hash(), s.ver),
 		codes:       codes,
+		ver:         s.ver,
 	}
 
 	for addr, c := range changes {
 		// skip storage changes if account is empty
 		if !c.data.IsEmpty() {
 			if len(c.storage) > 0 {
-				storageTrie := s.db.NewSecureTrie(
-					StorageTrieName(thor.Blake2b(addr[:])),
-					thor.BytesToBytes32(c.data.StorageRoot))
+				storageTrie := s.db.NewTrie(
+					StorageTrieName(addr),
+					thor.BytesToBytes32(c.data.StorageRoot),
+					c.data.meta.StorageCommitNum)
 
-				stage.storageTries = append(stage.storageTries, storageTrie)
 				for k, v := range c.storage {
 					if err := saveStorage(storageTrie, k, v); err != nil {
 						return nil, &Error{err}
 					}
 				}
+
+				prevRoot := c.data.StorageRoot
 				c.data.StorageRoot = storageTrie.Hash().Bytes()
+				if !bytes.Equal(prevRoot, c.data.StorageRoot) {
+					c.data.meta.StorageCommitNum = s.ver + 1
+					stage.storageTries = append(stage.storageTries, storageTrie)
+				}
 			}
 		}
 		if err := saveAccount(stage.accountTrie, addr, &c.data); err != nil {

@@ -20,7 +20,11 @@ func NewStater(db *muxdb.MuxDB) *Stater {
 	return &Stater{db}
 }
 
+func (s *Stater) DB() *muxdb.MuxDB {
+	return s.db
+}
+
 // NewState create a new state object.
-func (s *Stater) NewState(root thor.Bytes32) *State {
-	return New(s.db, root)
+func (s *Stater) NewState(root thor.Bytes32, ver uint32) *State {
+	return New(s.db, root, ver)
 }
