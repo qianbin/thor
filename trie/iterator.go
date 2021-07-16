@@ -31,6 +31,7 @@ type Iterator struct {
 
 	Key   []byte // Current data key on which the iterator is positioned on
 	Value []byte // Current data value on which the iterator is positioned on
+	Meta  []byte // Current metadata on which the iterator is positioned on
 	Err   error
 }
 
@@ -49,11 +50,13 @@ func (it *Iterator) Next() bool {
 		if it.nodeIt.Leaf() {
 			it.Key = it.nodeIt.LeafKey()
 			it.Value = it.nodeIt.LeafBlob()
+			it.Meta = it.nodeIt.LeafMeta()
 			return true
 		}
 	}
 	it.Key = nil
 	it.Value = nil
+	it.Meta = nil
 	it.Err = it.nodeIt.Error()
 	return false
 }
@@ -63,6 +66,9 @@ func (it *Iterator) Next() bool {
 func (it *Iterator) Prove() [][]byte {
 	return it.nodeIt.LeafProof()
 }
+
+// NodeFilter is the filter for node iterator.
+type NodeFilter func(path []byte, commitNum uint32) bool
 
 // NodeIterator is an iterator to traverse the trie pre-order.
 type NodeIterator interface {
@@ -76,18 +82,26 @@ type NodeIterator interface {
 	// Hash returns the hash of the current node.
 	Hash() thor.Bytes32
 
-	// Node returns encoded current node.
-	Node() ([]byte, error)
+	// CommitNum returns the commit number of the current node.
+	CommitNum() uint32
+
+	// Short returns true if the current node is a short node.
+	Short() bool
+
+	// ShortKey returns the key of the short node. It panics if the current node is not a short node.
+	// Callers must not retain references to the return value after calling Next.
+	ShortKey() []byte
 
 	// Parent returns the hash of the parent of the current node. The hash may be the one
 	// grandparent if the immediate parent is an internal node with no hash.
 	Parent() thor.Bytes32
+
 	// Path returns the hex-encoded path to the current node.
 	// Callers must not retain references to the return value after calling Next.
 	// For leaf nodes, the last element of the path is the 'terminator symbol' 0x10.
 	Path() []byte
 
-	// Leaf returns true iff the current node is a leaf node.
+	// Leaf returns true if the current node is a leaf node.
 	Leaf() bool
 
 	// LeafKey returns the key of the leaf. The method panics if the iterator is not
@@ -100,6 +114,11 @@ type NodeIterator interface {
 	// after calling Next.
 	LeafBlob() []byte
 
+	// LeafMeta returns the metadata of the leaf. The method panics if the iterator
+	// is not positioned at a leaf. Callers must not retain references to the value
+	// after calling Next.
+	LeafMeta() []byte
+
 	// LeafProof returns the Merkle proof of the leaf. The method panics if the
 	// iterator is not positioned at a leaf. Callers must not retain references
 	// to the value after calling Next.
@@ -111,17 +130,18 @@ type NodeIterator interface {
 type nodeIteratorState struct {
 	hash    thor.Bytes32 // Hash of the node being iterated (nil if not standalone)
 	node    node         // Trie node being iterated
-	enc     []byte
+	enc     []byte       // The encoded node
 	parent  thor.Bytes32 // Hash of the first full ancestor node (nil if current is the root)
 	index   int          // Child to be processed next
 	pathlen int          // Length of the path to this node
 }
 
 type nodeIterator struct {
-	trie  *Trie                // Trie being iterated
-	stack []*nodeIteratorState // Hierarchy of trie nodes persisting the iteration state
-	path  []byte               // Path to the current node
-	err   error                // Failure set in case of an internal error in the iterator
+	trie   *Trie                // Trie being iterated
+	stack  []*nodeIteratorState // Hierarchy of trie nodes persisting the iteration state
+	path   []byte               // Path to the current node
+	err    error                // Failure set in case of an internal error in the iterator
+	filter NodeFilter           // The node filter
 }
 
 // errIteratorEnd is stored in nodeIterator.err when iteration is done.
@@ -137,11 +157,11 @@ func (e seekError) Error() string {
 	return "seek error: " + e.err.Error()
 }
 
-func newNodeIterator(trie *Trie, start []byte) NodeIterator {
+func newNodeIterator(trie *Trie, start []byte, filter NodeFilter) NodeIterator {
 	if trie.Hash() == emptyState {
 		return new(nodeIterator)
 	}
-	it := &nodeIterator{trie: trie}
+	it := &nodeIterator{trie: trie, filter: filter}
 	it.err = it.seek(start)
 	return it
 }
@@ -153,27 +173,32 @@ func (it *nodeIterator) Hash() thor.Bytes32 {
 	return it.stack[len(it.stack)-1].hash
 }
 
-func (it *nodeIterator) Node() ([]byte, error) {
+func (it *nodeIterator) Short() bool {
 	if len(it.stack) == 0 {
-		return nil, nil
+		return false
 	}
-	st := it.stack[len(it.stack)-1]
-	if st.hash.IsZero() {
-		return nil, nil
-	}
+	_, ok := it.stack[len(it.stack)-1].node.(*shortNode)
+	return ok
+}
 
-	if len(st.enc) > 0 {
-		return st.enc, nil
+func (it *nodeIterator) ShortKey() []byte {
+	if len(it.stack) > 0 {
+		if short, ok := it.stack[len(it.stack)-1].node.(*shortNode); ok {
+			return short.Key
+		}
 	}
+	panic("not at short node")
+}
 
-	h := newHasher()
-	defer returnHasherToPool(h)
-
-	collapsed, _, err := h.hashChildren(st.node, nil, it.path)
-	if err != nil {
-		return nil, err
+func (it *nodeIterator) CommitNum() uint32 {
+	if len(it.stack) == 0 {
+		return 0
 	}
-	return rlp.EncodeToBytes(collapsed)
+	n := it.stack[len(it.stack)-1].node
+	if n != nil {
+		return n.commitNum()
+	}
+	return 0
 }
 
 func (it *nodeIterator) Parent() thor.Bytes32 {
@@ -189,7 +214,7 @@ func (it *nodeIterator) Leaf() bool {
 
 func (it *nodeIterator) LeafKey() []byte {
 	if len(it.stack) > 0 {
-		if _, ok := it.stack[len(it.stack)-1].node.(valueNode); ok {
+		if _, ok := it.stack[len(it.stack)-1].node.(*valueNode); ok {
 			return hexToKeybytes(it.path)
 		}
 	}
@@ -198,8 +223,17 @@ func (it *nodeIterator) LeafKey() []byte {
 
 func (it *nodeIterator) LeafBlob() []byte {
 	if len(it.stack) > 0 {
-		if node, ok := it.stack[len(it.stack)-1].node.(valueNode); ok {
-			return []byte(node)
+		if node, ok := it.stack[len(it.stack)-1].node.(*valueNode); ok {
+			return node.value
+		}
+	}
+	panic("not at leaf")
+}
+
+func (it *nodeIterator) LeafMeta() []byte {
+	if len(it.stack) > 0 {
+		if node, ok := it.stack[len(it.stack)-1].node.(*valueNode); ok {
+			return node.meta
 		}
 	}
 	panic("not at leaf")
@@ -207,7 +241,7 @@ func (it *nodeIterator) LeafBlob() []byte {
 
 func (it *nodeIterator) LeafProof() [][]byte {
 	if len(it.stack) > 0 {
-		if _, ok := it.stack[len(it.stack)-1].node.(valueNode); ok {
+		if _, ok := it.stack[len(it.stack)-1].node.(*valueNode); ok {
 			hasher := newHasher()
 			defer returnHasherToPool(hasher)
 
@@ -215,9 +249,9 @@ func (it *nodeIterator) LeafProof() [][]byte {
 
 			for i, item := range it.stack[:len(it.stack)-1] {
 				// Gather nodes that end up as hash nodes (or the root)
-				node, _, _ := hasher.hashChildren(item.node, nil, nil)
-				hashed, _ := hasher.store(node, nil, nil, false)
-				if _, ok := hashed.(hashNode); ok || i == 0 {
+				node, _, _ := hasher.hashChildren(item.node, nil, nil, 0)
+				hashed, _ := hasher.store(node, nil, nil, false, 0)
+				if _, ok := hashed.(*hashNode); ok || i == 0 {
 					enc, _ := rlp.EncodeToBytes(node)
 					proofs = append(proofs, enc)
 				}
@@ -286,6 +320,11 @@ func (it *nodeIterator) seek(prefix []byte) error {
 // peek creates the next state of the iterator.
 func (it *nodeIterator) peek(descend bool) (*nodeIteratorState, *int, []byte, error) {
 	if len(it.stack) == 0 {
+		if f, n := it.filter, it.trie.root; f != nil && n != nil {
+			if !f(nil, n.commitNum()) {
+				return nil, nil, nil, errIteratorEnd
+			}
+		}
 		// Initialize the iterator if we've just started.
 		root := it.trie.Hash()
 		state := &nodeIteratorState{node: it.trie.root, index: -1}
@@ -321,14 +360,14 @@ func (it *nodeIterator) peek(descend bool) (*nodeIteratorState, *int, []byte, er
 }
 
 func (st *nodeIteratorState) resolve(tr *Trie, path []byte) error {
-	if hash, ok := st.node.(hashNode); ok {
-		resolved, enc, err := tr.resolveHash(hash, path, true)
+	if hash, ok := st.node.(*hashNode); ok {
+		resolved, buf, err := tr.resolveHash(hash, path, true)
 		if err != nil {
 			return err
 		}
 		st.node = resolved
-		st.enc = enc
-		st.hash = thor.BytesToBytes32(hash)
+		st.enc = buf
+		st.hash = thor.BytesToBytes32(hash.hash)
 	}
 	return nil
 }
@@ -340,15 +379,24 @@ func (it *nodeIterator) nextChild(parent *nodeIteratorState, ancestor thor.Bytes
 		for i := parent.index + 1; i < len(node.Children); i++ {
 			child := node.Children[i]
 			if child != nil {
-				hash, _ := child.cache()
+				var hash thor.Bytes32
+				if h, _ := child.cache(); h != nil {
+					hash = thor.BytesToBytes32(h.hash)
+				}
+
+				path := append(it.path, byte(i))
+				if _, ok := child.(*hashNode); (ok || !hash.IsZero()) && it.filter != nil {
+					if !it.filter(path, child.commitNum()) {
+						continue
+					}
+				}
 				state := &nodeIteratorState{
-					hash:    thor.BytesToBytes32(hash),
+					hash:    hash,
 					node:    child,
 					parent:  ancestor,
 					index:   -1,
 					pathlen: len(it.path),
 				}
-				path := append(it.path, byte(i))
 				parent.index = i - 1
 				return state, path, true
 			}
@@ -356,15 +404,24 @@ func (it *nodeIterator) nextChild(parent *nodeIteratorState, ancestor thor.Bytes
 	case *shortNode:
 		// Short node, return the pointer singleton child
 		if parent.index < 0 {
-			hash, _ := node.Val.cache()
+			var hash thor.Bytes32
+			if h, _ := node.Val.cache(); h != nil {
+				hash = thor.BytesToBytes32(h.hash)
+			}
+
+			path := append(it.path, node.Key...)
+			if _, ok := node.Val.(*hashNode); (ok || !hash.IsZero()) && it.filter != nil {
+				if !it.filter(path, node.Val.commitNum()) {
+					return parent, it.path, false
+				}
+			}
 			state := &nodeIteratorState{
-				hash:    thor.BytesToBytes32(hash),
+				hash:    hash,
 				node:    node.Val,
 				parent:  ancestor,
 				index:   -1,
 				pathlen: len(it.path),
 			}
-			path := append(it.path, node.Key...)
 			return state, path, true
 		}
 	}
@@ -425,8 +482,16 @@ func (it *differenceIterator) Hash() thor.Bytes32 {
 	return it.b.Hash()
 }
 
-func (it *differenceIterator) Node() ([]byte, error) {
-	return it.b.Node()
+func (it *differenceIterator) CommitNum() uint32 {
+	return it.b.CommitNum()
+}
+
+func (it *differenceIterator) Short() bool {
+	return it.b.Short()
+}
+
+func (it *differenceIterator) ShortKey() []byte {
+	return it.b.ShortKey()
 }
 
 func (it *differenceIterator) Parent() thor.Bytes32 {
@@ -447,6 +512,10 @@ func (it *differenceIterator) LeafBlob() []byte {
 
 func (it *differenceIterator) LeafProof() [][]byte {
 	return it.b.LeafProof()
+}
+
+func (it *differenceIterator) LeafMeta() []byte {
+	return it.b.LeafMeta()
 }
 
 func (it *differenceIterator) Path() []byte {
@@ -532,11 +601,20 @@ func NewUnionIterator(iters []NodeIterator) (NodeIterator, *int) {
 	return ui, &ui.count
 }
 
+func (it *unionIterator) Short() bool {
+	return (*it.items)[0].Short()
+}
+
+func (it *unionIterator) ShortKey() []byte {
+	return (*it.items)[0].ShortKey()
+}
+
 func (it *unionIterator) Hash() thor.Bytes32 {
 	return (*it.items)[0].Hash()
 }
-func (it *unionIterator) Node() ([]byte, error) {
-	return (*it.items)[0].Node()
+
+func (it *unionIterator) CommitNum() uint32 {
+	return (*it.items)[0].CommitNum()
 }
 
 func (it *unionIterator) Parent() thor.Bytes32 {
@@ -553,6 +631,10 @@ func (it *unionIterator) LeafKey() []byte {
 
 func (it *unionIterator) LeafBlob() []byte {
 	return (*it.items)[0].LeafBlob()
+}
+
+func (it *unionIterator) LeafMeta() []byte {
+	return (*it.items)[0].LeafMeta()
 }
 
 func (it *unionIterator) LeafProof() [][]byte {

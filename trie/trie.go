@@ -53,25 +53,42 @@ type DatabaseWriter interface {
 	Put(key, value []byte) error
 }
 
-// NodeKey node key along with node path.
+// NodeKey consists of node properties besides the node hash.
 type NodeKey struct {
-	Hash    []byte
-	Path    []byte
-	Scaning bool // whether the key is being iterated. might be useful for cache logic.
+	Hash      []byte
+	CommitNum uint32 // the version number
+	Path      []byte // the radix path of key
+	Scaning   bool   // true if the key is being iterated. might be useful for cache logic.
 }
 
-// DatabaseReaderEx extended reader.
+// DatabaseEx is the extended interface of backing stores.
+type DatabaseEx interface {
+	DatabaseReaderEx
+	DatabaseWriterEx
+}
+
+// DatabaseReaderEx wraps the extended Get method of a backing store for the trie.
 type DatabaseReaderEx interface {
-	// GetEx provides additional path and decoder which gives
-	// impler the chance to do advanced optimization on persisting and caching.
-	GetEncoded(key *NodeKey) ([]byte, error)
-	GetDecoded(key *NodeKey) (dec interface{}, cacheDec func(interface{}))
+	GetEx(key *NodeKey) (val []byte, err error)
 }
 
-// DatabaseWriterEx extended writer.
+// DatabaseWriterEx wraps the extended Put method of a backing store for the trie.
 type DatabaseWriterEx interface {
-	PutEncoded(key *NodeKey, enc []byte) error
+	PutEx(key *NodeKey, val []byte) error
 }
+
+// LeafNode presents the leaf node.
+type LeafNode struct {
+	Value []byte
+	Meta  []byte
+}
+
+// FastLeafGet defines a callback function which is called before resolving intermediate nodes.
+// Trie Get method will accelerated if the leaf node can be determined so returned before all nodes resolved,
+// key is the leaf key, and commitNum is the commit number of the node which is being resolved.
+type FastLeafGet func(key []byte, commitNum uint32) (*LeafNode, error)
+
+type internalFastLeafGet func(commitNum uint32) (*LeafNode, error)
 
 // Trie is a Merkle Patricia Trie.
 // The zero value is an empty trie with no database.
@@ -79,9 +96,8 @@ type DatabaseWriterEx interface {
 //
 // Trie is not safe for concurrent use.
 type Trie struct {
-	root         node
-	db           Database
-	originalRoot thor.Bytes32
+	root node
+	db   interface{}
 }
 
 // newFlag returns the cache flag value for a newly created node.
@@ -101,7 +117,23 @@ func New(root thor.Bytes32, db Database) (*Trie, error) {
 		if db == nil {
 			panic("trie.New: cannot use existing root without a database")
 		}
-		rootnode, _, err := trie.resolveHash(root[:], nil, false)
+		rootnode, _, err := trie.resolveHash(&hashNode{root[:], 0}, nil, false)
+		if err != nil {
+			return nil, err
+		}
+		trie.root = rootnode
+	}
+	return trie, nil
+}
+
+// NewEx creates an extended trie which supports commit-number and leaf metadata.
+func NewEx(root thor.Bytes32, commitNum uint32, db DatabaseEx) (*Trie, error) {
+	trie := &Trie{db: db}
+	if (root != thor.Bytes32{}) && root != emptyRoot {
+		if db == nil {
+			panic("trie.NewEx: cannot use existing root without a database")
+		}
+		rootnode, _, err := trie.resolveHash(&hashNode{root[:], commitNum}, nil, false)
 		if err != nil {
 			return nil, err
 		}
@@ -113,7 +145,12 @@ func New(root thor.Bytes32, db Database) (*Trie, error) {
 // NodeIterator returns an iterator that returns nodes of the trie. Iteration starts at
 // the key after the given start key.
 func (t *Trie) NodeIterator(start []byte) NodeIterator {
-	return newNodeIterator(t, start)
+	return newNodeIterator(t, start, nil)
+}
+
+// NodeIteratorF returns an node iterator with a filter.
+func (t *Trie) NodeIteratorF(start []byte, filter NodeFilter) NodeIterator {
+	return newNodeIterator(t, start, filter)
 }
 
 // Get returns the value for key stored in the trie.
@@ -130,44 +167,79 @@ func (t *Trie) Get(key []byte) []byte {
 // The value bytes must not be modified by the caller.
 // If a node was not found in the database, a MissingNodeError is returned.
 func (t *Trie) TryGet(key []byte) ([]byte, error) {
-	key = keybytesToHex(key)
-	value, newroot, didResolve, err := t.tryGet(t.root, key, 0)
-	if err == nil && didResolve {
-		t.root = newroot
-	}
-	return value, err
+	val, _, err := t.TryGetEx(key, nil)
+	return val, err
 }
 
-func (t *Trie) tryGet(origNode node, key []byte, pos int) (value []byte, newnode node, didResolve bool, err error) {
+// TryGetEx returns the value and metadata for key stored in the trie.
+// The value and meta bytes must not be modified by the caller.
+// If a node was not found in the database, a MissingNodeError is returned.
+// flGet optionally provides the fast way to get the leaf node.
+func (t *Trie) TryGetEx(key []byte, flGet FastLeafGet) (val, meta []byte, err error) {
+	var iflGet internalFastLeafGet
+	if flGet != nil {
+		iflGet = func(commitNum uint32) (*LeafNode, error) {
+			// capture the key arg, so no need pass to tryGet method
+			return flGet(key, commitNum)
+		}
+	}
+
+	value, newroot, didResolve, err := t.tryGet(t.root, keybytesToHex(key), 0, iflGet)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if didResolve {
+		t.root = newroot
+	}
+	if value != nil {
+		return value.value, value.meta, nil
+	}
+	return nil, nil, nil
+}
+
+func (t *Trie) tryGet(origNode node, key []byte, pos int, iflGet internalFastLeafGet) (value *valueNode, newnode node, didResolve bool, err error) {
 	switch n := (origNode).(type) {
 	case nil:
 		return nil, nil, false, nil
-	case valueNode:
+	case *valueNode:
 		return n, n, false, nil
 	case *shortNode:
 		if len(key)-pos < len(n.Key) || !bytes.Equal(n.Key, key[pos:pos+len(n.Key)]) {
 			// key not found in trie
 			return nil, n, false, nil
 		}
-		value, newnode, didResolve, err = t.tryGet(n.Val, key, pos+len(n.Key))
+		value, newnode, didResolve, err = t.tryGet(n.Val, key, pos+len(n.Key), iflGet)
 		if err == nil && didResolve {
 			n = n.copy()
 			n.Val = newnode
 		}
 		return value, n, didResolve, err
 	case *fullNode:
-		value, newnode, didResolve, err = t.tryGet(n.Children[key[pos]], key, pos+1)
+		value, newnode, didResolve, err = t.tryGet(n.Children[key[pos]], key, pos+1, iflGet)
 		if err == nil && didResolve {
 			n = n.copy()
 			n.Children[key[pos]] = newnode
 		}
 		return value, n, didResolve, err
-	case hashNode:
+	case *hashNode:
+		if iflGet != nil {
+			// fast leaf get
+			leaf, err := iflGet(n.cNum)
+			if err != nil {
+				return nil, nil, false, err
+			}
+
+			// got
+			if leaf != nil {
+				return &valueNode{leaf.Value, leaf.Meta}, nil, false, nil
+			}
+		}
 		child, _, err := t.resolveHash(n, key[:pos], false)
 		if err != nil {
 			return nil, n, true, err
 		}
-		value, newnode, _, err := t.tryGet(child, key, pos)
+		value, newnode, _, err := t.tryGet(child, key, pos, iflGet)
 		return value, newnode, true, err
 	default:
 		panic(fmt.Sprintf("%T: invalid node: %v", origNode, origNode))
@@ -195,9 +267,21 @@ func (t *Trie) Update(key, value []byte) {
 //
 // If a node was not found in the database, a MissingNodeError is returned.
 func (t *Trie) TryUpdate(key, value []byte) error {
+	return t.TryUpdateEx(key, value, nil)
+}
+
+// TryUpdateEx associates key with value and metadata in the trie. Subsequent calls to
+// Get will return value. If value has length zero, any existing value
+// is deleted from the trie and calls to Get will return nil.
+//
+// The value and meta bytes must not be modified by the caller while they are
+// stored in the trie.
+//
+// If a node was not found in the database, a MissingNodeError is returned.
+func (t *Trie) TryUpdateEx(key, value []byte, meta []byte) error {
 	k := keybytesToHex(key)
 	if len(value) != 0 {
-		_, n, err := t.insert(t.root, nil, k, valueNode(value))
+		_, n, err := t.insert(t.root, nil, k, &valueNode{value: value, meta: meta})
 		if err != nil {
 			return err
 		}
@@ -214,8 +298,10 @@ func (t *Trie) TryUpdate(key, value []byte) error {
 
 func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error) {
 	if len(key) == 0 {
-		if v, ok := n.(valueNode); ok {
-			return !bytes.Equal(v, value.(valueNode)), value, nil
+		if v, ok := n.(*valueNode); ok {
+			_v := value.(*valueNode)
+			// dirty when value or meta is not equal
+			return !bytes.Equal(v.value, _v.value) || !bytes.Equal(v.meta, _v.meta), value, nil
 		}
 		return true, value, nil
 	}
@@ -262,7 +348,7 @@ func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error
 	case nil:
 		return true, &shortNode{key, value, t.newFlag()}, nil
 
-	case hashNode:
+	case *hashNode:
 		// We've hit a part of the trie that isn't loaded yet. Load
 		// the node and insert into it. This leaves all child nodes on
 		// the path to the value in the trie.
@@ -387,13 +473,13 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 		// n still contains at least two values and cannot be reduced.
 		return true, n, nil
 
-	case valueNode:
+	case *valueNode:
 		return true, nil, nil
 
 	case nil:
 		return false, nil, nil
 
-	case hashNode:
+	case *hashNode:
 		// We've hit a part of the trie that isn't loaded yet. Load
 		// the node and delete from it. This leaves all child nodes on
 		// the path to the value in the trie.
@@ -420,42 +506,35 @@ func concat(s1 []byte, s2 ...byte) []byte {
 }
 
 func (t *Trie) resolve(n node, prefix []byte) (node, error) {
-	if n, ok := n.(hashNode); ok {
+	if n, ok := n.(*hashNode); ok {
 		node, _, err := t.resolveHash(n, prefix, false)
 		return node, err
 	}
 	return n, nil
 }
 
-func (t *Trie) resolveHash(n hashNode, prefix []byte, scaning bool) (node, []byte, error) {
-	if ex, ok := t.db.(DatabaseReaderEx); ok {
-		key := NodeKey{
-			n,
+func (t *Trie) resolveHash(n *hashNode, prefix []byte, scaning bool) (node, []byte, error) {
+	var (
+		buf []byte
+		err error
+	)
+	switch db := t.db.(type) {
+	case DatabaseReader:
+		buf, err = db.Get(n.hash)
+	case DatabaseReaderEx:
+		buf, err = db.GetEx(&NodeKey{
+			n.hash,
+			n.cNum,
 			prefix,
 			scaning,
-		}
-		dec, cacheDec := ex.GetDecoded(&key)
-		if dec != nil {
-			return dec.(node), nil, nil
-		}
-
-		enc, err := ex.GetEncoded(&key)
-		if err != nil || enc == nil {
-			return nil, nil, &MissingNodeError{NodeHash: thor.BytesToBytes32(n), Path: prefix}
-		}
-
-		dec = mustDecodeNode(n, enc)
-		if cacheDec != nil {
-			cacheDec(dec)
-		}
-		return dec.(node), enc, nil
+		})
+	default:
+		panic("unsupported database")
 	}
-
-	enc, err := t.db.Get(n)
-	if err != nil || enc == nil {
-		return nil, nil, &MissingNodeError{NodeHash: thor.BytesToBytes32(n), Path: prefix}
+	if err != nil || len(buf) == 0 {
+		return nil, nil, &MissingNodeError{NodeHash: thor.BytesToBytes32(n.hash), Path: prefix}
 	}
-	return mustDecodeNode(n, enc), enc, nil
+	return mustDecodeNode(n, buf), buf, nil
 }
 
 // Root returns the root hash of the trie.
@@ -465,9 +544,9 @@ func (t *Trie) Root() []byte { return t.Hash().Bytes() }
 // Hash returns the root hash of the trie. It does not write to the
 // database and can be used even if the trie doesn't have one.
 func (t *Trie) Hash() thor.Bytes32 {
-	hash, cached, _ := t.hashRoot(nil)
+	hash, cached, _ := t.hashRoot(nil, 0)
 	t.root = cached
-	return thor.BytesToBytes32(hash.(hashNode))
+	return thor.BytesToBytes32(hash.(*hashNode).hash)
 }
 
 // Commit writes all nodes to the trie's database.
@@ -479,7 +558,7 @@ func (t *Trie) Commit() (root thor.Bytes32, err error) {
 	if t.db == nil {
 		panic("Commit called on trie with nil database")
 	}
-	return t.CommitTo(t.db)
+	return t.CommitTo(t.db.(DatabaseWriter))
 }
 
 // CommitTo writes all nodes to the given database.
@@ -490,19 +569,45 @@ func (t *Trie) Commit() (root thor.Bytes32, err error) {
 // the changes made to db are written back to the trie's attached
 // database before using the trie.
 func (t *Trie) CommitTo(db DatabaseWriter) (root thor.Bytes32, err error) {
-	hash, cached, err := t.hashRoot(db)
+	hash, cached, err := t.hashRoot(db, 0)
 	if err != nil {
 		return (thor.Bytes32{}), err
 	}
 	t.root = cached
-	return thor.BytesToBytes32(hash.(hashNode)), nil
+	return thor.BytesToBytes32(hash.(*hashNode).hash), nil
 }
 
-func (t *Trie) hashRoot(db DatabaseWriter) (node, node, error) {
+// CommitEx writes all nodes with the given commit number to the trie's database.
+//
+// Committing flushes nodes from memory.
+// Subsequent Get calls will load nodes from the database.
+func (t *Trie) CommitEx(commitNum uint32) (root thor.Bytes32, err error) {
+	if t.db == nil {
+		panic("Commit called on trie with nil database")
+	}
+	return t.CommitToEx(t.db.(DatabaseWriterEx), commitNum)
+}
+
+// CommitToEx writes all nodes with the given commit number to the given database.
+//
+// Committing flushes nodes from memory. Subsequent Get calls will
+// load nodes from the trie's database. Calling code must ensure that
+// the changes made to db are written back to the trie's attached
+// database before using the trie.
+func (t *Trie) CommitToEx(db DatabaseWriterEx, commitNum uint32) (root thor.Bytes32, err error) {
+	hash, cached, err := t.hashRoot(db, commitNum)
+	if err != nil {
+		return thor.Bytes32{}, err
+	}
+	t.root = cached
+	return thor.BytesToBytes32(hash.(*hashNode).hash), nil
+}
+
+func (t *Trie) hashRoot(db interface{}, commitNum uint32) (node, node, error) {
 	if t.root == nil {
-		return hashNode(emptyRoot.Bytes()), nil, nil
+		return &hashNode{hash: emptyRoot.Bytes()}, nil, nil
 	}
 	h := newHasher()
 	defer returnHasherToPool(h)
-	return h.hash(t.root, db, nil, true)
+	return h.hash(t.root, db, nil, true, commitNum)
 }
